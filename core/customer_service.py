@@ -152,8 +152,8 @@ def load_original_customer_df(worksheet):
 @st.cache_data(ttl=300)
 def load_customer_df_from_sheet():
     client = get_gspread_client()
-    sheet_name = get_customer_sheet_name()
-    worksheet = get_worksheet(client, CUSTOMER_SHEET_NAME)
+    worksheet = get_worksheet(client, CUSTOMER_SHEET_NAME)  # 고객시트는 이름 고정
+    all_values = worksheet.get_all_values()
     all_values = worksheet.get_all_values()
     if not all_values:
         return pd.DataFrame().fillna(" ")

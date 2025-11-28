@@ -14,11 +14,12 @@ from config import (
     SHEET_KEY,
     DEFAULT_TENANT_ID,
     SESS_TENANT_ID,
-    TENANT_MODE,
     PARENT_DRIVE_FOLDER_ID,
-    ACCOUNTS_SHEET_NAME,
     CUSTOMER_DATA_TEMPLATE_ID,
     WORK_REFERENCE_TEMPLATE_ID,
+    ACCOUNTS_SHEET_NAME,
+    TENANT_MODE,
+    CUSTOMER_SHEET_NAME,
 )
 
 def debug_print_drive_user():
@@ -250,11 +251,34 @@ def get_drive_service():
     creds = get_user_credentials(scopes)
     return build("drive", "v3", credentials=creds)
 
+def get_current_tenant_id():
+    # 이 함수는 아마 이미 있을 텐데, 없으면 이렇게 정의
+    return st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+
+
 def get_worksheet(client, sheet_name: str):
+    """
+    sheet_name 에 따라 적절한 테넌트별 스프레드시트를 선택해서
+    해당 워크시트를 열어준다.
+    """
     tenant_id = get_current_tenant_id()
-    sheet_key = get_sheet_key_for_tenant(tenant_id)
-    sheet = client.open_by_key(sheet_key)
-    return sheet.worksheet(sheet_name)
+
+    # 1) 고객 데이터 시트
+    if sheet_name == CUSTOMER_SHEET_NAME:
+        sheet_key = get_customer_sheet_key_for_tenant(tenant_id)
+
+    # 2) 업무정리/업무참고 시트들
+    #    ↳ 탭 이름은 실제 구글시트 탭 이름에 맞게 수정
+    elif sheet_name in ("업무참고", "업무정리"):
+        sheet_key = get_work_sheet_key_for_tenant(tenant_id)
+
+    # 3) 그 외 공용 시트 (일정, 결산, 메모 등)
+    else:
+        sheet_key = SHEET_KEY
+
+    sh = client.open_by_key(sheet_key)
+    return sh.worksheet(sheet_name)
+
 
 def create_office_files_for_tenant(tenant_id: str, office_name: str = "") -> dict:
     """
@@ -364,6 +388,93 @@ def read_data_from_sheet(sheet_name: str, default_if_empty=None):
     except Exception as e:
         st.warning(f"[시트 읽기 실패] {sheet_name}: {e}")
         return default_if_empty
+
+@st.cache_data(ttl=600)
+def _load_tenant_sheet_keys():
+    """
+    Accounts 시트에서 tenant_id 별로
+    - customer_sheet_key
+    - work_sheet_key
+    를 읽어 dict로 반환.
+
+    형식:
+    {
+      "hanwoory": {"customer": "...", "work": "..."},
+      "officeA" : {"customer": "...", "work": "..."},
+      ...
+    }
+    """
+    records = read_data_from_sheet(ACCOUNTS_SHEET_NAME, default_if_empty=[]) or []
+    mapping: dict[str, dict[str, str]] = {}
+
+    for r in records:
+        tid = str(r.get("tenant_id") or r.get("login_id") or "").strip()
+        if not tid:
+            continue
+
+        is_active_raw = str(r.get("is_active", "")).strip().lower()
+        is_active = is_active_raw in ("true", "1", "y")
+
+        if not is_active:
+            continue
+
+        customer_key = str(r.get("customer_sheet_key", "")).strip()
+        work_key     = str(r.get("work_sheet_key", "")).strip()
+
+        mapping[tid] = {
+            "customer": customer_key,
+            "work": work_key,
+        }
+
+    return mapping
+
+
+def get_customer_sheet_key_for_tenant(tenant_id: str) -> str:
+    """
+    테넌트별 고객데이터 스프레드시트 ID 반환.
+    - TENANT_MODE=False 이면 기존 SHEET_KEY 그대로 사용.
+    - 해당 테넌트 키가 없으면 DEFAULT_TENANT_ID → 마지막으로 SHEET_KEY 로 폴백.
+    """
+    if not TENANT_MODE:
+        return SHEET_KEY
+
+    mapping = _load_tenant_sheet_keys()
+
+    # 1순위: 해당 테넌트
+    rec = mapping.get(tenant_id)
+    if rec and rec.get("customer"):
+        return rec["customer"]
+
+    # 2순위: 기본(admin) 테넌트
+    rec = mapping.get(DEFAULT_TENANT_ID)
+    if rec and rec.get("customer"):
+        return rec["customer"]
+
+    # 3순위: 최후 폴백
+    return SHEET_KEY
+
+
+def get_work_sheet_key_for_tenant(tenant_id: str) -> str:
+    """
+    테넌트별 업무정리 스프레드시트 ID 반환.
+    로직은 고객데이터와 동일 구조.
+    """
+    if not TENANT_MODE:
+        # 아직 단일 모드일 때는 기존 WORK_REFERENCE_TEMPLATE_ID 를 그대로 사용
+        return WORK_REFERENCE_TEMPLATE_ID
+
+    mapping = _load_tenant_sheet_keys()
+
+    rec = mapping.get(tenant_id)
+    if rec and rec.get("work"):
+        return rec["work"]
+
+    rec = mapping.get(DEFAULT_TENANT_ID)
+    if rec and rec.get("work"):
+        return rec["work"]
+
+    return WORK_REFERENCE_TEMPLATE_ID
+
 
 def read_memo_from_sheet(sheet_name: str):
     client = get_gspread_client()
