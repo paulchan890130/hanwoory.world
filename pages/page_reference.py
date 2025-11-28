@@ -12,6 +12,8 @@ from config import (
 
 from core.google_sheets import (
     get_gspread_client,
+    get_work_sheet_key_for_tenant,   # 🔹 추가
+    get_current_tenant_id,           # 🔹 추가 (google_sheets 쪽 함수)
 )
 
 # 업무정리용 구글시트 설정
@@ -51,7 +53,10 @@ def load_all_reference_sheets() -> dict[str, pd.DataFrame]:
     if client is None:
         return {}
 
-    sh = client.open_by_key(GOOGLE_SHEET_ID)
+    tenant_id = get_current_tenant_id()
+    sheet_key = get_work_sheet_key_for_tenant(tenant_id)
+
+    sh = client.open_by_key(sheet_key)
     result: dict[str, pd.DataFrame] = {}
     for ws in sh.worksheets():
         values = ws.get_all_values()
@@ -67,7 +72,15 @@ def save_reference_sheet(sheet_name: str, df: pd.DataFrame) -> bool:
         st.error("Google Sheets 클라이언트를 생성하지 못했습니다.")
         return False
 
-    sh = client.open_by_key(GOOGLE_SHEET_ID)
+    tenant_id = get_current_tenant_id()
+    sheet_key = get_work_sheet_key_for_tenant(tenant_id)
+
+    sh = client.open_by_key(sheet_key)
+    try:
+        ws = sh.worksheet(sheet_name)
+    except Exception as e:
+        st.error(f"시트 '{sheet_name}' 를 찾지 못했습니다: {e}")
+        return False
     try:
         ws = sh.worksheet(sheet_name)
     except Exception as e:

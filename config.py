@@ -31,7 +31,6 @@ ENABLE_CUSTOMER_FOLDERS = False
 SESS_LOGGED_IN = "logged_in"
 SESS_USERNAME = "username"
 
-TENANT_MODE = False          # 나중에 True로 바꾸면 멀티테넌트 모드
 DEFAULT_TENANT_ID = "hanwoory"
 SESS_TENANT_ID = "sess_tenant_id"
 
