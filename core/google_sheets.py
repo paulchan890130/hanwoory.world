@@ -31,6 +31,7 @@ def get_user_credentials(scopes):
     """
     로컬: token 없으면 브라우저 띄워서 로그인 (InstalledAppFlow)
     서버(Render): token.json이 반드시 있어야 하고, 없으면 에러.
+    서버에서는 /etc/secrets 가 read-only 이므로 파일에 다시 쓰기 금지.
     """
     creds = None
 
@@ -43,17 +44,18 @@ def get_user_credentials(scopes):
         if not creds:
             raise RuntimeError(
                 "서버 모드인데 token.json이 없습니다. "
-                "로컬에서 OAuth 로그인 후 생성된 token.json을 서버로 업로드하세요."
+                "로컬에서 OAuth 로그인 후 생성된 token.json을 서버 Secret File로 올려야 합니다."
             )
-        # 서버에서는 브라우저를 띄울 수 없으므로, 갱신만 허용
+        # 서버에서는 브라우저를 띄울 수 없고, /etc/secrets 는 read-only
+        # → 메모리 내에서만 refresh, 파일에는 쓰지 않는다.
         if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            # 갱신된 토큰 저장 (선택)
-            with open(OAUTH_TOKEN_PATH, "w", encoding="utf-8") as token:
-                token.write(creds.to_json())
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                raise RuntimeError(f"서버 모드에서 OAuth 토큰 갱신 실패: {e}")
         return creds
 
-    # ----- 로컬 모드 -----
+    # ----- 로컬 모드 (Windows) -----
     # 여기부터는 RUN_ENV != "server" (즉, local)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -67,7 +69,7 @@ def get_user_credentials(scopes):
             )
             creds = flow.run_local_server(port=0)
 
-        # 갱신/새 토큰 저장
+        # 로컬에서는 갱신/새 토큰을 파일에 저장해도 된다.
         with open(OAUTH_TOKEN_PATH, "w", encoding="utf-8") as token:
             token.write(creds.to_json())
 
