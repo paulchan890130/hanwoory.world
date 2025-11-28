@@ -1,3 +1,23 @@
+cd "C:\Users\윤찬\K.ID 출입국업무관리"
+streamlit run app.py
+
+
+깃 푸시
+
+cd "C:\Users\윤찬\K.ID 출입국업무관리"
+
+git status   # 수정된 파일 확인
+git add config.py
+git add app.py
+git push -u origin main
+
+cd "C:\Users\윤찬\K.ID 출입국무관리"
+
+git status           # core/google_sheets.py 수정 확인
+git add core/google_sheets.py
+git commit -m "fix: 서버 모드에서 token.json 쓰기 제거 (read-only 에러 해결)"
+git push origin main
+
 cd "C:\Users\윤찬\K.ID 출입국업무관리\hanwoory_complete"
 streamlit run admin_app/app.py
 
@@ -53,6 +73,3 @@ USERS = {
 
 → 저장 후 다시 실행하면
 그 계정으로 로그인할 수 있습니다.
-
-cd "C:\Users\윤찬\K.ID 출입국업무관리"
-streamlit run app.py

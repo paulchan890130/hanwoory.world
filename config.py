@@ -8,8 +8,8 @@ TENANT_MODE = (RUN_ENV == "server")
 
 if platform.system() == "Windows":
     # 로컬에서 쓰는 경로
-    OAUTH_CLIENT_SECRET_PATH = r"C:\Users\윤찬\K.ID 출입국무관리\client_secret_desktop.json"
-    OAUTH_TOKEN_PATH = r"C:\Users\윤찬\K.ID 출입국무관리\token.json"
+    OAUTH_CLIENT_SECRET_PATH = r"C:\Users\윤찬\K.ID 출입국업무관리\client_secret_desktop.json"
+    OAUTH_TOKEN_PATH = r"C:\Users\윤찬\K.ID 출입국업무관리\token.json"
 else:
     # Render 같은 리눅스 서버에서 쓸 경로 (Secret Files로 맞춰줄 예정)
     OAUTH_CLIENT_SECRET_PATH = "/etc/secrets/client_secret_desktop.json"
