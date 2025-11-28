@@ -1,0 +1,216 @@
+현재 앱 전체 구조 (모듈)
+
+app.py
+
+상단 메뉴/페이지 라우팅만 담당.
+
+pages/
+
+page_home.py : 홈 대시보드 (등록증/여권 만기 알림, 예정업무/진행업무 일부 표시)
+
+page_customer.py : 고객관리 (검색, 행 추가, 삭제, 저장, 구글시트 연동)
+
+page_scan.py : 스캔/OCR (여권+등록증 인식 → 고객관리 자동 반영)
+
+page_daily.py : 일일결산
+
+page_monthly.py : 월간결산 (요일별/업무별/시간대별 분석 그래프)
+
+page_manual.py : 메뉴얼 GPT 검색 페이지 (현재 GPT 서버 문제로 사실상 사용 중단 상태, 향후 리뉴얼 예정)
+
+page_memo.py : 장기/중기 메모 (구글시트 연동)
+
+page_reference.py : 업무참고 (구글시트 임베드)
+
+page_document.py : 문서 자동작성 (PDF 템플릿 + 도장 생성)
+
+page_completed.py : 완료업무 조회
+
+core/
+
+customer_service.py : 고객 DF 로드/저장, 신규/수정/삭제, 스캔 반영, 고객 폴더 생성/연동 로직 포함
+
+tasks_service.py : 예정업무/진행업무/완료업무 로드·저장
+
+google_sheets.py : 구글시트 read/write 래퍼
+
+utils/
+
+document.py : 도장 이미지 생성(create_seal), PDF 폼 필드 채우기 등 문서 유틸
+
+config.py
+
+시트 이름, 세션 키, 기본 상수, 구글드라이브 상위 폴더 ID, 도장용 폰트/이미지 경로
+
+고객폴더 옵션 플래그: ENABLE_CUSTOMER_FOLDERS = False (기본 OFF)
+
+기능별 완료 상태
+
+스캔/OCR (page_scan.py)
+
+Tesseract 경로 고정: C:\Program Files\Tesseract-OCR\tesseract.exe 기준.
+
+parse_passport, parse_arc로 여권 MRZ / 등록증 OCR & 파싱.
+
+OCR 결과를 scan_한글, scan_성, scan_명, scan_여권, scan_등록증, scan_번호, scan_발급일, scan_만기일, scan_주소 등 필드에 미리 채워줌.
+
+st.form 안에서는 st.form_submit_button("💾 고객관리 반영")만 사용,
+제출 시 customer_service를 통해 고객 DF에 반영.
+
+저장 성공 여부를 st.session_state["scan_saved_ok"]로 관리하고,
+폼 밖에서 성공 메시지와 “← 고객관리로 돌아가기” 버튼으로 네비게이션.
+
+문서 자동작성 (page_document.py + utils/document.py)
+
+신청인/숙소제공자/신원보증인/미성년자 대리인 등 모두 고객데이터에서 선택 가능.
+
+여권/등록증 번호에서 생년월일·성별 계산 후 PDF 템플릿의 필드 자동 채움.
+
+도장 생성:
+
+create_seal(circle_path, name, font_path, size) 사용.
+
+현재는 로컬 fonts/, templates/ 폴더 기반으로 정상 동작.
+
+장기 계획: 서버/온라인 저장소(Git, S3 등)에 폰트/템플릿을 두고 불러오는 구조로 재설계 예정 (이미 방향 합의됨).
+
+고객관리 (page_customer.py + core/customer_service.py)
+
+구글시트에서 고객 DF 로드 → 고객ID 기준 최신순 정렬.
+
+검색, 행 추가(고객ID: YYYYMMDD01~99 형식), 삭제, Undo, 저장 구현 완료.
+
+저장 로직:
+
+신규 고객: append_rows_to_sheet로 하단에 추가.
+
+기존 고객: save_customer_batch_update로 변경분만 배치 반영.
+
+전화번호 3-4-4 자리, ID/날짜 포맷 등은 구글시트+판다스 조합으로 처리.
+
+고객별 폴더 기능 “옵션화” (완료)
+
+config.py 에서:
+
+ENABLE_CUSTOMER_FOLDERS = False  # 기본 OFF
+
+
+customer_service.py
+
+is_customer_folder_enabled() 헬퍼로 옵션 체크.
+
+create_customer_folders(...) 시작 부분에서 if not is_customer_folder_enabled(): return → OFF일 때는 아무 것도 안 함.
+
+page_customer.py
+
+표시 컬럼에서 폴더는 옵션이 켜졌을 때만 포함.
+
+폴더 일괄 생성/연동 버튼도 is_customer_folder_enabled()가 True일 때만 노출.
+
+삭제 시 Drive 폴더 삭제도 옵션이 켜졌을 때만 시도.
+
+즉, **현재 상태(ENABLE_CUSTOMER_FOLDERS = False)**에서는
+
+UI에서 폴더 관련 컬럼/버튼을 숨기고
+
+백엔드에서도 Drive API를 호출하지 않도록 정리 완료.
+
+장기적으로는 테넌트(행정사 사무소)별로 ON/OFF 가능하도록 확장 예정
+(지금 구조가 그 확장을 염두에 둔 설계).
+
+일일/월간 결산, 메모, 참고, 완료업무
+
+일일결산 / 월간결산: 구글시트 연동 + 그래프(요일별/업무별/시간대별) 구현.
+
+메모/업무참고/완료업무: 각각 전용 시트에 연결, 기본 UI 정상 동작.
+
+메뉴얼 GPT 검색 (page_manual.py)
+
+구조: Streamlit → Flask 중간서버(/search) → OpenAI → 답변 반환.
+
+현재 문제:
+
+서버에서 메뉴얼 전체 텍스트를 한 번에 보내면서 토큰 초과(400, max_tokens_per_request) 발생 → Render 서버 오류.
+
+결론:
+
+현재는 사실상 “사용불가 상태로 간주”
+
+추후 **벡터 검색 기반 “메뉴얼 GPT v2”**로 재설계 예정.
+
+단기적으로는 메뉴얼 PDF/웹페이지 바로가기 버튼 + (필요하면) 간단한 GPT 질의 조합으로 정리할 계획.
+
+로그인/멀티테넌트(행정사 사무소 단위) 설계 방향
+
+역할 구조:
+
+Admin (나): 한우리 본체, 전체 시스템 관리, 테넌트 생성/요금제/권한 관리.
+
+Customer(행정사 사무소): 각 사무소별 계정(내부 직원 공유 가능).
+
+일반 “외국인 손님” 계정은 구상에 없음(앱은 B2B 중심).
+
+데이터 분리 방향:
+
+초기는 Admin 계정의 구글시트/드라이브에 모든 테넌트 데이터 보관,
+앱 내부에서 tenant_id 기준 필터링.
+
+장기적으로는 DB + S3(or 유사 스토리지) 기반 구조로 옮기고,
+문서 템플릿/폰트/설정은 Git 레포지토리 기반 관리.
+
+고객별 폴더:
+
+기본값 OFF,
+
+나중에 테넌트별 설정에서만 ON 가능하게 하는 옵션 기능으로 유지.
+
+현재까지 작업된 큰 결정들
+
+앱은 Streamlit + Google Sheets + Google Drive 기반 내부 업무용 도구.
+
+고객 데이터, 일정, 업무, 결산, 메모 모두 구글시트에 통합 저장.
+
+고객별 폴더 기능은 기본 OFF, 향후 SaaS화/테넌트화 시 선택 옵션으로 제공.
+
+메뉴얼 GPT 서버는 현재 비활성/오류 상태로 두고,
+나중에 벡터스토어/attachments 기반 “메뉴얼 v2” 단계에서 다시 손보기로.
+
+앞으로 추진할 우선순위 (로드맵)
+
+OCR 정교화 (우선)
+
+여권 발급일/만기일, 등록증 뒤 7자리, 주소 등 필드별 인식 정확도 향상.
+
+자주 발생하는 예외 케이스(특정 여권/등록증 양식, 한글/영문 혼용, 발급/만기 텍스트 오인식 등) 처리.
+
+속도/에러 핸들링 개선.
+
+메뉴얼 페이지 최소 정리
+
+상단에 “체류민원/사증민원 메뉴얼 바로가기 버튼”만 먼저 안정적으로 배치.
+
+GPT 검색 박스는
+
+당분간 “서버 점검 중” 또는
+
+아주 가벼운 형태로만 유지(토큰 폭주 방지)
+
+본격적인 GPT 업그레이드는 로그인/테넌트 이후로 넘김.
+
+회원가입 + 로그인 + 멀티테넌트(행정사 사무소 단위)
+
+tenant_id 개념 도입,
+
+각 테넌트별로 고객/일정/결산/메모가 분리되도록 데이터 계층 정리.
+
+이때 고객폴더/구글드라이브 경로도 tenant_id 기반으로 나누는 방향.
+
+메뉴얼 GPT v2 (벡터 검색 + 근거 표시)
+
+메뉴얼 PDF를 벡터스토어/검색 인덱스로 올려두고,
+
+질문마다 메뉴얼 일부만 모델에 붙이는 구조로 재설계.
+
+답변에는 항상 “근거(메뉴얼 조항/페이지)”를 함께 표기하고,
+
+카테고리(체류/사증/영주/국적/E-7-4 등) 선택 + 정해진 답변 템플릿으로 고정.

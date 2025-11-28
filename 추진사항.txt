@@ -1,0 +1,181 @@
+✅ 지금까지 구조 + 부족했던 핵심 정리 (최종판)
+🧱 시스템 개요
+
+“출입국 행정업무 프로그램을 각 사용자(사무실)마다 독립적으로 사용할 수 있게 만든다.”
+
+✅ 가입 시 자동 처리 (완료됨)
+기능	설명
+📁 사용자 전용 폴더 생성	/user@example.com/ 폴더 생성
+📄 구글 시트 생성	업무정리 - user@example.com, 고객 데이터 - user@example.com 생성
+🧾 템플릿 시트 복사	.xlsx 템플릿 파일을 기반으로 시트 구조 그대로 복사
+🔑 편집 권한 부여	해당 이메일에 구글 드라이브 권한 자동 부여
+✅ 가입 결과로 생성되는 구조
+📂 user@example.com/
+├── 업무정리 - user@example.com  ← 20개 시트 포함된 Google Sheet
+├── 고객 데이터 - user@example.com  ← 11개 시트 포함된 Google Sheet
+└── 고객관리/
+    └── 고객ID1/
+    └── 고객ID2/
+
+✅ 저장된 메타 정보 (DB or 세션에 저장)
+
+사용자 이메일
+
+사용자 폴더 ID
+
+업무정리 시트 ID
+
+고객 데이터 시트 ID
+
+❌ [빠졌던 핵심 문제] — app.py에 연동되는 로직
+🔻 지금까지는 이렇게 돼 있음
+# 고정된 시트 ID (잘못된 구조)
+sheet_id = "1p7Xt9x8TxVwQHzfiyTmCppvYSOuLHMTJmwdCErZ8KX4"
+
+
+→ 모든 사용자가 하나의 동일한 시트만 접근
+
+✅ 앞으로 가야 할 방향
+⛳ 1. 사용자 로그인 → 본인 시트 ID 세션에 저장
+# 로그인 성공 시
+st.session_state["sheet_customer_id"] = 사용자의 고객 데이터 시트 ID
+st.session_state["sheet_task_id"] = 사용자 업무정리 시트 ID
+
+⛳ 2. app.py가 시트 ID를 세션에서 가져오도록 수정
+customer_sheet_id = st.session_state.get("sheet_customer_id")
+task_sheet_id = st.session_state.get("sheet_task_id")
+
+if not customer_sheet_id or not task_sheet_id:
+    st.error("로그인 먼저 하세요.")
+    st.stop()
+
+⛳ 3. 이렇게 하면 → 로그인한 사용자만 자신의 시트에 연결됨
+사용자	열리는 시트
+user1@example.com	업무정리 - user1, 고객 데이터 - user1
+user2@example.com	업무정리 - user2, 고객 데이터 - user2
+✅ 그리고 app.py는 카테고리화 (분할 구조)
+app/
+├── main.py            ← 로그인 처리 및 진입점
+├── pages/
+│   ├── 업무정리.py      ← 업무정리 시트 연동 UI
+│   ├── 고객관리.py      ← 고객 데이터 시트 연동 UI
+│   └── ...
+├── utils/
+│   ├── sheet_api.py     ← 구글 시트에서 데이터 가져오기/쓰기
+│   └── session.py       ← 로그인 정보 확인
+
+✅ 결론
+항목	상태	설명
+업무정리, 고객 데이터 시트 생성	✅ 완료	가입 시 자동 생성 및 사용자 폴더에 배치
+사용자 시트 ID 저장	✅ 완료	생성 시 반환되어 DB나 세션에 저장
+카테고리화된 app.py 설계	⚠️ 미완료	구조 설계 필요 (pages/업무정리.py 등)
+시트 ID를 사용자에 따라 자동 연결	⚠️ 미완료	로그인 → 세션에 ID 저장 → app.py에서 사용
+다음으로 할 수 있는 작업 (제안)
+선택지	설명
+🔐 로그인 UI + 세션 저장 구현	로그인 시 사용자 시트 ID 불러와서 st.session_state에 저장
+📂 app.py를 카테고리별로 분할	유지보수 쉽게: 업무정리, 고객관리, 수수료 등
+📡 구글 시트 읽고 쓰는 함수 분리	utils/sheet_api.py로 시트 연동 로직 정리
+
+
+출입국 업무관리 트리를 설명해 줄게, 여기서  ─ 는 한 화면에 반이 나누어진거야, 
+예를들면'├ 1. 일정달력 ─ 2. 등록증 만기 4개월 전'은 창 하나에 좌측이 1. 일정달력, 우측이 2. 득록증 만기 5개월 전
+이어서 그 아래 좌측 단기메모, 3. 여권 만기 6개월 전
+이어서 그 아래 한화면 4. 예정업무 
+이어서 그 아래 한화면 5. 진행업무
+
+출입국 업무관리(메인)
+│       ├ 1. 일정달력 ─ 2. 등록증 만기 4개월 전
+│       ├ 단기메모    ─ 3. 여권 만기 6개월 전
+│       ├ 4. 예정업무
+│       └ 5. 진행업무
+├ 홈으로 (아이콘(출입국 업무관리(메인)))
+├ 메모장 (아이콘)
+│       └ 장기보존 메모 ─ 중기 메모
+├ 업무 (아이콘)
+│  │  └ 업무참고 (시트)
+│  ├ 서류작성 (아이콘)
+│  └ 완료업무 (아이콘)
+├ 고객관리 (아이콘)
+│  │  └ 고객관리 (시트)
+│  ├ 폴더 일괄 생성/연동 (긴 아이콘)
+│  ├ 행 추가 (아이콘)
+│  ├ 스캔(여권/등록증) (아이콘)
+│  ├ 삭제요청 (아이콘)
+│  ├ 저장 (아이콘)
+│  └ 삭제 취소 (아이콘)
+├ 결산 (아이콘)
+│  │  └ 일일결산 (각종 결산 내용)
+│  └ 월간결산 (아이콘)
+└ 메뉴얼 검색 (아이콘)
+
+
+    with toolbar_col:
+        toolbar_options = {
+            "🏠 홈으로": PAGE_HOME,
+            "🗒 메모장": PAGE_MEMO,
+            "📚 업무": PAGE_REFERENCE,
+            "👥 고객관리": PAGE_CUSTOMER,
+            "📊 결산": PAGE_DAILY, # 일일결산
+            "🧭 메뉴얼 검색": PAGE_MANUAL
+
+
+if current_page_to_display == PAGE_CUSTOMER:
+elif current_page_to_display == PAGE_DAILY:
+elif current_page_to_display == PAGE_MONTHLY:
+elif current_page_to_display == PAGE_SCAN:
+elif current_page_to_display == PAGE_MANUAL: 
+elif current_page_to_display == PAGE_MEMO: 
+elif current_page_to_display == PAGE_DOCUMENT:
+elif current_page_to_display == PAGE_REFERENCE:
+elif current_page_to_display == PAGE_COMPLETED:
+elif current_page_to_display == PAGE_HOME:
+
+K.ID 출입국업무관리/
+
+│
+
+├── main.py                 # 메인 실행 파일 (엔트리 포인트)
+
+├── config.py               # 상수 및 설정 값 관리
+
+├── requirements.txt        # 라이브러리 의존성 목록
+
+│
+
+├── services/               # 핵심 기능 로직 폴더
+
+│   ├── __init__.py
+
+│   ├── google_api.py       # 구글 시트/드라이브 인증 및 CRUD
+
+│   └── ocr_engine.py       # Tesseract OCR 및 파싱 로직 (가장 큼)
+
+│
+
+├── utils/                  # 보조 유틸리티 폴더
+
+│   ├── __init__.py
+
+│   ├── common.py           # 이미지 처리, 폰트 설정 등 공용 함수
+
+│   └── pdf_generator.py    # 도장 생성, PDF 처리 로직
+
+│
+
+└── views/                  # 페이지별 UI 코드 폴더
+
+    ├── __init__.py
+
+    ├── home.py             # 홈 화면 (일정, 만기 알림)
+
+    ├── customer.py         # 고객 관리
+
+    ├── daily.py            # 일일 결산
+
+    ├── monthly.py          # 월간 결산
+
+    ├── document.py         # 문서 작성
+
+    ├── memo.py             # 메모장
+
+    └── scan.py             # 스캔 페이지

@@ -1,0 +1,50 @@
+# ===== Imports (정리본) =====
+import os, platform, io, json, uuid, calendar
+import datetime
+import streamlit as st
+import requests
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+from PIL import Image, ImageDraw, ImageFont
+from PIL import Image as _PILImage, ImageOps, ImageFilter
+import shlex
+
+# OCR 관련 import (pytesseract 등) 그대로 유지
+try:
+    import pytesseract
+except Exception:
+    pytesseract = None
+
+# === 새로 추가되는 import ===
+from config import (
+    # 세션 키 / 페이지 키 / 시트 이름 / 상수들
+    SESS_CURRENT_PAGE,
+    SESS_DF_CUSTOMER,
+    SESS_PLANNED_TASKS_TEMP,
+    SESS_ACTIVE_TASKS_TEMP,
+    PAGE_HOME,
+    PAGE_MEMO,
+    PAGE_REFERENCE,
+    PAGE_CUSTOMER,
+    PAGE_DAILY,
+    PAGE_MANUAL,
+    # 필요하면 다른 상수도 추가 import
+)
+from core.google_sheets import (
+    get_gspread_client,
+    get_drive_service,
+    get_worksheet,
+    write_data_to_sheet,
+    append_rows_to_sheet,
+    read_data_from_sheet,
+    read_memo_from_sheet,
+    save_memo_to_sheet,
+)
+from core.customer_service import (
+    load_customer_df_from_sheet,
+    save_customer_batch_update,
+    upsert_customer_from_scan,
+    create_customer_folders,
+    extract_folder_id,
+)

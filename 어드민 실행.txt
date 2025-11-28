@@ -1,0 +1,58 @@
+cd "C:\Users\윤찬\K.ID 출입국업무관리\hanwoory_complete"
+streamlit run admin_app/app.py
+
+cd "C:\Users\윤찬\K.ID 출입국업무관리"
+streamlit run signup.py
+
+paulchan@hanwoory.iam.gserviceaccount.com
+streamlit-service@kidhanwoory.iam.gserviceaccount.com → “편집자” 권한
+
+🔍 이유
+
+제가 만들어드린 버전의 auth_manager.py는
+Google OAuth 연동 전에 기본적으로 이렇게 설정되어 있어요:
+
+USERS = {
+    "admin@seoul.com": {
+        "name": "서울 관리자",
+        "password": "password123",
+        "branch_id": "seoul_law"
+    }
+}
+
+
+Streamlit 실행 시 로그인 창이 뜨고,
+email = admin@seoul.com, password = password123
+로 입력하면 정상적으로 들어갈 수 있습니다.
+
+✅ 해결 방법 2가지
+① 테스트용 로그인
+
+그냥 이렇게 입력해보세요 👇
+
+이메일: admin@seoul.com
+
+비밀번호: password123
+
+→ 바로 관리자 대시보드(또는 사무소 페이지)로 들어갈 거예요.
+
+② 직접 계정 수정하기 (추천)
+
+실제 사용하는 계정으로 바꾸려면
+hanwoory_new/shared/auth_manager.py 파일을 열어서
+맨 위 부분을 이렇게 고치세요 👇
+
+USERS = {
+    "윤찬@hanwoory.com": {    # 또는 Gmail 주소
+        "name": "윤찬 행정사",
+        "password": "내가원하는비밀번호",
+        "branch_id": "seoul_law"
+    }
+}
+
+
+→ 저장 후 다시 실행하면
+그 계정으로 로그인할 수 있습니다.
+
+cd "C:\Users\윤찬\K.ID 출입국업무관리"
+streamlit run app.py
