@@ -4,9 +4,16 @@ import platform
 
 # 로컬 / 서버 모드 구분
 RUN_ENV = os.getenv("HANWOORY_ENV", "local")  # 기본값: local
-
-# 멀티테넌트 모드는 서버에서만 켠다
 TENANT_MODE = (RUN_ENV == "server")
+
+if platform.system() == "Windows":
+    # 로컬에서 쓰는 경로
+    OAUTH_CLIENT_SECRET_PATH = r"C:\Users\윤찬\K.ID 출입국무관리\client_secret_desktop.json"
+    OAUTH_TOKEN_PATH = r"C:\Users\윤찬\K.ID 출입국무관리\token.json"
+else:
+    # Render 같은 리눅스 서버에서 쓸 경로 (Secret Files로 맞춰줄 예정)
+    OAUTH_CLIENT_SECRET_PATH = "/etc/secrets/client_secret_desktop.json"
+    OAUTH_TOKEN_PATH = "/etc/secrets/token.json"
 
 # ===== 드라이브/도장 등 경로 상수 =====
 PARENT_DRIVE_FOLDER_ID = "1OX5tH9MOYz9leeYJ_KIrBHWBZxMXjb16"
@@ -31,9 +38,7 @@ SESS_TENANT_ID = "sess_tenant_id"
 SESS_LOGGED_IN = "logged_in"
 SESS_USERNAME = "username"
 
-# OAuth (gmail 계정으로 Drive/Sheets 사용)
-OAUTH_CLIENT_SECRET_PATH = r"C:\Users\윤찬\K.ID 출입국업무관리\client_secret_desktop.json"
-OAUTH_TOKEN_PATH = r"C:\Users\윤찬\K.ID 출입국업무관리\token.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ===== 구글 서비스 계정 키 경로 =====
 if platform.system() == "Windows":
