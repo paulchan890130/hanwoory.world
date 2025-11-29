@@ -190,50 +190,97 @@ def create_tenant_spreadsheet(tenant_id: str, office_name: str = "") -> str:
     new_id = new_file.get("id")
     return new_id
 
-def get_current_tenant_id():
-    return st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
 
 @st.cache_data(ttl=600)
-def _load_tenant_sheet_map():
+def get_current_tenant_id():
+    """현재 세션에서 사용하는 테넌트 ID (없으면 기본 hanwoory)"""
+    return st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+
+
+@st.cache_data(ttl=600)
+def _load_tenant_sheet_keys():
     """
-    Accounts 시트에서 tenant_id -> sheet_key 매핑을 읽어온다.
-    TENANT_MODE=True일 때만 사용.
+    Accounts 시트에서 tenant_id 별로
+    - customer_sheet_key
+    - work_sheet_key
+    를 읽어 dict로 반환.
+
+    형식:
+    {
+      "hanwoory": {"customer": "...", "work": "..."},
+      "officeA" : {"customer": "...", "work": "..."},
+      ...
+    }
     """
-    from core.google_sheets import read_data_from_sheet  # 자기 자신이면 위치 맞춰서 import
-    records = read_data_from_sheet(ACCOUNTS_SHEET_NAME, default_if_empty=[])
-    mapping = {}
+    from core.google_sheets import read_data_from_sheet  # 자기 자신 호출
+
+    records = read_data_from_sheet(ACCOUNTS_SHEET_NAME, default_if_empty=[]) or []
+    mapping: dict[str, dict[str, str]] = {}
+
     for r in records:
-        tid = str(r.get("tenant_id", "")).strip()
-        sk  = str(r.get("sheet_key", "")).strip()
+        # tenant_id가 비어 있으면 login_id라도 사용
+        tid = str(r.get("tenant_id") or r.get("login_id") or "").strip()
+        if not tid:
+            continue
+
         is_active = str(r.get("is_active", "")).strip().lower()
-        if tid and sk and is_active in ("true", "1", "y"):
-            mapping[tid] = sk
+        if is_active not in ("true", "1", "y"):
+            continue  # 비활성 계정은 무시
+
+        cust = str(r.get("customer_sheet_key", "")).strip()
+        work = str(r.get("work_sheet_key", "")).strip()
+
+        mapping[tid] = {
+            "customer": cust,
+            "work": work,
+        }
+
     return mapping
 
-def get_sheet_key_for_tenant(tenant_id: str) -> str:
+
+def get_customer_sheet_key_for_tenant(tenant_id: str) -> str:
     """
-    나중에 테넌트별로 다른 스프레드시트를 쓰고 싶으면
-    이 함수만 수정하면 된다.
+    테넌트별 고객데이터 스프레드시트 ID 반환.
+    TENANT_MODE=False 이면 예전처럼 SHEET_KEY 사용.
     """
     if not TENANT_MODE:
-        return SHEET_KEY  # 기존 단일 모드
+        return SHEET_KEY
 
-    mapping = _load_tenant_sheet_map()
-    return mapping.get(tenant_id, SHEET_KEY)
+    mapping = _load_tenant_sheet_keys()
 
-def get_sheet_key_for_tenant(tenant_id: str) -> str:
-    """
-    나중에 테넌트별로 다른 스프레드시트를 쓰고 싶으면
-    이 함수만 수정하면 된다.
-    """
-    # 예시 (미래):
-    # if TENANT_MODE:
-    #     mapping = {
-    #         "hanwoory": SHEET_KEY_HANWOORY,
-    #         "office_b": SHEET_KEY_OFFICE_B,
-    #     }
-    #     return mapping.get(tenant_id, SHEET_KEY)
+    # 1순위: 해당 테넌트
+    rec = mapping.get(tenant_id)
+    if rec and rec.get("customer"):
+        return rec["customer"]
+
+    # 2순위: 기본(admin) 테넌트
+    rec = mapping.get(DEFAULT_TENANT_ID)
+    if rec and rec.get("customer"):
+        return rec["customer"]
+
+    # 3순위: 그래도 없으면 기존 SHEET_KEY
     return SHEET_KEY
+
+
+def get_work_sheet_key_for_tenant(tenant_id: str) -> str:
+    """
+    테넌트별 업무정리 스프레드시트 ID 반환.
+    """
+    if not TENANT_MODE:
+        return WORK_REFERENCE_TEMPLATE_ID
+
+    mapping = _load_tenant_sheet_keys()
+
+    rec = mapping.get(tenant_id)
+    if rec and rec.get("work"):
+        return rec["work"]
+
+    rec = mapping.get(DEFAULT_TENANT_ID)
+    if rec and rec.get("work"):
+        return rec["work"]
+
+    return WORK_REFERENCE_TEMPLATE_ID
+
 
 # ===== Google Sheets / Drive Client =====
 @st.cache_resource(ttl=600)
@@ -388,92 +435,6 @@ def read_data_from_sheet(sheet_name: str, default_if_empty=None):
     except Exception as e:
         st.warning(f"[시트 읽기 실패] {sheet_name}: {e}")
         return default_if_empty
-
-@st.cache_data(ttl=600)
-def _load_tenant_sheet_keys():
-    """
-    Accounts 시트에서 tenant_id 별로
-    - customer_sheet_key
-    - work_sheet_key
-    를 읽어 dict로 반환.
-
-    형식:
-    {
-      "hanwoory": {"customer": "...", "work": "..."},
-      "officeA" : {"customer": "...", "work": "..."},
-      ...
-    }
-    """
-    records = read_data_from_sheet(ACCOUNTS_SHEET_NAME, default_if_empty=[]) or []
-    mapping: dict[str, dict[str, str]] = {}
-
-    for r in records:
-        tid = str(r.get("tenant_id") or r.get("login_id") or "").strip()
-        if not tid:
-            continue
-
-        is_active_raw = str(r.get("is_active", "")).strip().lower()
-        is_active = is_active_raw in ("true", "1", "y")
-
-        if not is_active:
-            continue
-
-        customer_key = str(r.get("customer_sheet_key", "")).strip()
-        work_key     = str(r.get("work_sheet_key", "")).strip()
-
-        mapping[tid] = {
-            "customer": customer_key,
-            "work": work_key,
-        }
-
-    return mapping
-
-
-def get_customer_sheet_key_for_tenant(tenant_id: str) -> str:
-    """
-    테넌트별 고객데이터 스프레드시트 ID 반환.
-    - TENANT_MODE=False 이면 기존 SHEET_KEY 그대로 사용.
-    - 해당 테넌트 키가 없으면 DEFAULT_TENANT_ID → 마지막으로 SHEET_KEY 로 폴백.
-    """
-    if not TENANT_MODE:
-        return SHEET_KEY
-
-    mapping = _load_tenant_sheet_keys()
-
-    # 1순위: 해당 테넌트
-    rec = mapping.get(tenant_id)
-    if rec and rec.get("customer"):
-        return rec["customer"]
-
-    # 2순위: 기본(admin) 테넌트
-    rec = mapping.get(DEFAULT_TENANT_ID)
-    if rec and rec.get("customer"):
-        return rec["customer"]
-
-    # 3순위: 최후 폴백
-    return SHEET_KEY
-
-
-def get_work_sheet_key_for_tenant(tenant_id: str) -> str:
-    """
-    테넌트별 업무정리 스프레드시트 ID 반환.
-    로직은 고객데이터와 동일 구조.
-    """
-    if not TENANT_MODE:
-        # 아직 단일 모드일 때는 기존 WORK_REFERENCE_TEMPLATE_ID 를 그대로 사용
-        return WORK_REFERENCE_TEMPLATE_ID
-
-    mapping = _load_tenant_sheet_keys()
-
-    rec = mapping.get(tenant_id)
-    if rec and rec.get("work"):
-        return rec["work"]
-
-    rec = mapping.get(DEFAULT_TENANT_ID)
-    if rec and rec.get("work"):
-        return rec["work"]
-
-    return WORK_REFERENCE_TEMPLATE_ID
 
 
 def read_memo_from_sheet(sheet_name: str):

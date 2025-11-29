@@ -57,7 +57,7 @@ WORK_REFERENCE_TEMPLATE_ID = "1p7Xt9x8TxVwQHzfiyTmCppvYSOuLHMTJmwdCErZ8KX4"
 # --- 계정/테넌트 관련 ---
 ACCOUNTS_SHEET_NAME = "Accounts"
 
-TENANT_MODE = False   # 기본: 단일 테넌트
+# TENANT_MODE = False   # 기본: 단일 테넌트
 DEFAULT_TENANT_ID = "hanwoory"
 
 SESS_TENANT_ID  = "sess_tenant_id"
