@@ -341,32 +341,49 @@ def get_drive_service():
 
 
 def get_worksheet(client, sheet_name: str):
-    """sheet_name 에 따라 적절한 테넌트별 스프레드시트를 선택해서 워크시트 열기."""
+    """
+    sheet_name 에 따라 적절한 테넌트별 스프레드시트를 선택해서
+    해당 워크시트를 열어준다.
+    """
     tenant_id = get_current_tenant_id()
 
-    # 1) 고객 데이터 시트
-    if sheet_name == CUSTOMER_SHEET_NAME:
-        sheet_key = get_customer_sheet_key_for_tenant(tenant_id)
+    # ─────────────────────
+    # 1) 멀티테넌트 모드 (서버: Render)
+    # ─────────────────────
+    if TENANT_MODE:
+        # 1-1) 고객데이터 워크북 안에 들어있는 탭들
+        if sheet_name in (
+            CUSTOMER_SHEET_NAME,          # "고객 데이터"
+            DAILY_SUMMARY_SHEET_NAME,     # "일일결산"
+            DAILY_BALANCE_SHEET_NAME,     # "잔액"
+            PLANNED_TASKS_SHEET_NAME,     # "예정업무"
+            ACTIVE_TASKS_SHEET_NAME,      # "진행업무"
+            COMPLETED_TASKS_SHEET_NAME,   # "완료업무"
+            EVENTS_SHEET_NAME,            # "일정"
+            MEMO_LONG_SHEET_NAME,         # "장기메모"
+            MEMO_MID_SHEET_NAME,          # "중기메모"
+            MEMO_SHORT_SHEET_NAME,        # "단기메모"
+        ):
+            sheet_key = get_customer_sheet_key_for_tenant(tenant_id)
 
-    # 2) 업무/메모/결산/일정/업무진행 관련 시트들 → 업무 워크북
-    elif sheet_name in (
-        "업무참고",
-        "업무정리",
-        PLANNED_TASKS_SHEET_NAME,
-        ACTIVE_TASKS_SHEET_NAME,
-        COMPLETED_TASKS_SHEET_NAME,
-        DAILY_SUMMARY_SHEET_NAME,
-        DAILY_BALANCE_SHEET_NAME,
-        EVENTS_SHEET_NAME,
-        MEMO_LONG_SHEET_NAME,
-        MEMO_MID_SHEET_NAME,
-        MEMO_SHORT_SHEET_NAME,
-    ):
-        sheet_key = get_work_sheet_key_for_tenant(tenant_id)
+        # 1-2) 업무정리 워크북 안에 들어있는 탭들
+        elif sheet_name in ("업무참고", "업무정리"):
+            sheet_key = get_work_sheet_key_for_tenant(tenant_id)
 
-    # 3) 그 외 공용 시트
+        # 1-3) 혹시 빠진 탭이 있으면, 일단 기본(admin) 시트로
+        else:
+            sheet_key = SHEET_KEY
+
+    # ─────────────────────
+    # 2) 단일 테넌트 모드 (로컬 개발)
+    #    → 예전 동작 최대한 유지
+    # ─────────────────────
     else:
-        sheet_key = SHEET_KEY
+        if sheet_name in ("업무참고", "업무정리"):
+            sheet_key = get_work_sheet_key_for_tenant(tenant_id)
+        else:
+            # 기존처럼 하나의 SHEET_KEY 안에 모든 탭이 있는 구조
+            sheet_key = SHEET_KEY
 
     sh = client.open_by_key(sheet_key)
     return sh.worksheet(sheet_name)
