@@ -739,10 +739,11 @@ if st:
         st.stop()
 
     # ===== 여기부터는 '로그인된 상태'에서만 실행 =====
+    tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
 
     # 테넌트별 데이터 로딩 (고객 / 예정 / 진행)
     if SESS_DF_CUSTOMER not in st.session_state:
-        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
+        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet(tenant_id)
 
     if SESS_PLANNED_TASKS_TEMP not in st.session_state:
         st.session_state[SESS_PLANNED_TASKS_TEMP] = load_planned_tasks_from_sheet()

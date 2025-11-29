@@ -14,7 +14,8 @@ from config import (
     SESS_CUSTOMER_SEARCH_MASK_INDICES,
     SESS_CUSTOMER_AWAITING_DELETE_CONFIRM,
     SESS_CUSTOMER_DELETED_ROWS_STACK,
-
+    SESS_TENANT_ID,
+    DEFAULT_TENANT_ID,
     # 페이지 키
     PAGE_SCAN,
 
@@ -333,8 +334,10 @@ def render():
             client = get_gspread_client()
             worksheet = get_worksheet(client, CUSTOMER_SHEET_NAME)
 
+            tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+
             # 1) 시트에 없던 신규 행만 append
-            original = load_customer_df_from_sheet()
+            original = load_customer_df_from_sheet(tenant_id)
             orig_ids = set(original["고객ID"].astype(str))
             new_rows = []
             for _, row in edited_df_display.iterrows():
@@ -363,6 +366,6 @@ def render():
 
             # 4) 최종 리프레시
             load_customer_df_from_sheet.clear()
-            st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
+            st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet(tenant_id)
             st.session_state[SESS_CUSTOMER_DATA_EDITOR_KEY] += 1
             st.rerun()

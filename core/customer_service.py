@@ -169,27 +169,24 @@ def load_original_customer_df(worksheet):
 
 
 @st.cache_data(ttl=300)
-def load_customer_df_from_sheet() -> pd.DataFrame:
+def load_customer_df_from_sheet(cache_tenant_id: str) -> pd.DataFrame:
     """
     현재 세션의 tenant에 맞는 '고객 데이터' 시트를 읽어서 DataFrame으로 반환.
-    - 데이터가 한 줄도 없더라도, 헤더 행이 있으면 그 헤더로 빈 DataFrame을 만든다.
+
+    ⚠ cache_tenant_id는 실제 로직에는 안 쓰고,
+       캐시 키를 테넌트별로 분리하는 용도로만 쓴다.
     """
     client = get_gspread_client()
     worksheet = get_worksheet(client, CUSTOMER_SHEET_NAME)
 
-    # 전체 값 (헤더 + 데이터) 한 번에 가져오기
     all_values = worksheet.get_all_values() or []
-
     if not all_values:
-        # 시트가 완전 비어 있으면 컬럼도 없는 완전 빈 df
         return pd.DataFrame()
 
-    # 1행 = 헤더
     header = [str(h) for h in all_values[0]]
     data_rows = all_values[1:]
 
     if not data_rows:
-        # 데이터 행이 없다 → 헤더만 있는 빈 df
         df = pd.DataFrame(columns=header)
     else:
         df = pd.DataFrame(data_rows, columns=header)
@@ -364,8 +361,10 @@ def upsert_customer_from_scan(
             ws.batch_update(batch)
 
         # 캐시 갱신
+        tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+
         load_customer_df_from_sheet.clear()
-        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
+        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet(tenant_id)
 
         return True, f"기존 고객({df.at[hit_idx, '고객ID']}) 정보가 업데이트되었습니다."
 
@@ -393,7 +392,9 @@ def upsert_customer_from_scan(
     create_customer_folders(pd.DataFrame([base]), ws)
 
     # 캐시 갱신
+    tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+
     load_customer_df_from_sheet.clear()
-    st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
+    st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet(tenant_id)
 
     return True, f"신규 고객이 추가되었습니다 (고객ID: {new_id})."

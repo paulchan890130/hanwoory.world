@@ -9,6 +9,8 @@ import streamlit as st
 from config import (
     # 세션 상태 키
     SESS_DF_CUSTOMER,
+    SESS_TENANT_ID,
+    DEFAULT_TENANT_ID,
     SESS_PLANNED_TASKS_TEMP,
     SESS_ACTIVE_TASKS_TEMP,
     # 시트 이름
@@ -141,8 +143,9 @@ def render():
         st.subheader("2. 🪪 등록증 만기 4개월 전")
 
         # 👉 홈 들어올 때마다, 현재 테넌트 기준으로 고객 DF 다시 로딩
-        df_customers_for_alert_view = load_customer_df_from_sheet()
-        st.session_state[SESS_DF_CUSTOMER] = df_customers_for_alert_view
+        tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+        df_customers_for_alert_view = load_customer_df_from_sheet(tenant_id)
+        st.session_state[SESS_DF_CUSTOMER] = df_customers_for_alert_view.copy()
 
         if df_customers_for_alert_view.empty:
             st.write("(표시할 고객 없음)")

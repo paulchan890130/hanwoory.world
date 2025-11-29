@@ -274,13 +274,13 @@ def get_customer_sheet_key_for_tenant(tenant_id: str) -> str:
 def get_work_sheet_key_for_tenant(tenant_id: str) -> str:
     """
     테넌트별 업무정리 스프레드시트 ID 반환.
-    - 멀티테넌트 모드(server)에서는:
+    - 로컬(TENANT_MODE=False): WORK_REFERENCE_TEMPLATE_ID 사용
+    - 서버(TENANT_MODE=True):
       * 해당 테넌트에 work_sheet_key가 있으면 그걸 사용
-      * 기본 테넌트(hanwoory)는 자기 work_sheet_key 없으면 기본 템플릿/기존 값으로 폴백
-      * 일반 테넌트는 절대 hanwoory의 work_sheet_key로 폴백하지 않음
+      * 일반 테넌트는 기본 테넌트(hanwoory)로 폴백하지 않는다
+      * 기본 테넌트(hanwoory)는 자기 work_sheet_key 없으면 템플릿으로 폴백
     """
     if not TENANT_MODE:
-        # 로컬 단일테넌트 모드: 기존처럼 템플릿(또는 메인) 사용
         return WORK_REFERENCE_TEMPLATE_ID
 
     mapping = _load_tenant_sheet_keys()
@@ -290,9 +290,18 @@ def get_work_sheet_key_for_tenant(tenant_id: str) -> str:
     if rec and rec.get("work"):
         return rec["work"]
 
-    # 2) 일반 테넌트이면, 한우리로 폴백하지 않고 템플릿으로
+    # 2) 일반 테넌트면, 한우리로 폴백하지 않고 템플릿 사용
     if tenant_id != DEFAULT_TENANT_ID:
         return WORK_REFERENCE_TEMPLATE_ID
+
+    # 3) 기본 테넌트(hanwoory)의 폴백
+    rec = mapping.get(DEFAULT_TENANT_ID)
+    if rec and rec.get("work"):
+        return rec["work"]
+
+    # 4) 그래도 없으면 템플릿
+    return WORK_REFERENCE_TEMPLATE_ID
+
 
     # 3) 기본 테넌트(hanwoory)는 자기 행에 work_sheet_key가 채워져 있으면 그걸 사용
     rec = mapping.get(DEFAULT_TENANT_ID)
