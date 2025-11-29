@@ -191,7 +191,6 @@ def create_tenant_spreadsheet(tenant_id: str, office_name: str = "") -> str:
     return new_id
 
 
-@st.cache_data(ttl=600)
 def get_current_tenant_id():
     """현재 세션에서 사용하는 테넌트 ID (없으면 기본 hanwoory)"""
     return st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
@@ -297,10 +296,6 @@ def get_drive_service():
     scopes = ["https://www.googleapis.com/auth/drive"]
     creds = get_user_credentials(scopes)
     return build("drive", "v3", credentials=creds)
-
-def get_current_tenant_id():
-    # 이 함수는 아마 이미 있을 텐데, 없으면 이렇게 정의
-    return st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
 
 
 def get_worksheet(client, sheet_name: str):

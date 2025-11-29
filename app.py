@@ -28,6 +28,8 @@ from pages.page_document import render as render_document_page
 from pages import page_scan
 from pages import page_completed
 
+from config import RUN_ENV, TENANT_MODE
+
 # ==== OCR ====
 try:
     import pytesseract
@@ -753,6 +755,7 @@ if st:
             st.session_state[SESS_USERNAME] = ""
             st.rerun()
 
+
     st.markdown("""
     <style>
       [data-testid="stVerticalBlock"] > div { margin-bottom: 0px !important; }
@@ -763,6 +766,11 @@ if st:
       /* input[type="text"], textarea { font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'NanumGothic', sans-serif !important; } */
     </style>
     """, unsafe_allow_html=True)
+
+    st.sidebar.caption(
+        f"ENV={RUN_ENV}, TENANT_MODE={TENANT_MODE}, "
+        f"tenant={st.session_state.get(SESS_TENANT_ID, '-')}"
+    )
 
     title_col, toolbar_col = st.columns([2, 3]) 
     with title_col:

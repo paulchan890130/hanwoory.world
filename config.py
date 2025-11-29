@@ -3,8 +3,10 @@ import os
 import platform
 
 # 로컬 / 서버 모드 구분
-RUN_ENV = os.getenv("HANWOORY_ENV", "local")  # 기본값: local
+RAW_RUN_ENV = os.getenv("HANWOORY_ENV", "local")
+RUN_ENV = (RAW_RUN_ENV or "local").strip().lower()
 TENANT_MODE = (RUN_ENV == "server")
+
 
 if platform.system() == "Windows":
     # 로컬에서 쓰는 경로
