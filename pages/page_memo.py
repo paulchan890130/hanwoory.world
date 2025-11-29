@@ -15,7 +15,6 @@ from core.google_sheets import (
 
 # --- 메모 로드/저장 래퍼 함수들 ---
 
-@st.cache_data(ttl=600)
 def load_long_memo() -> str:
     """구글시트 '장기메모' 시트에서 A1 내용 읽기"""
     return read_memo_from_sheet(MEMO_LONG_SHEET_NAME)
@@ -29,7 +28,6 @@ def save_long_memo(content: str) -> bool:
     return ok
 
 
-@st.cache_data(ttl=600)
 def load_mid_memo() -> str:
     """구글시트 '중기메모' 시트에서 A1 내용 읽기"""
     return read_memo_from_sheet(MEMO_MID_SHEET_NAME)

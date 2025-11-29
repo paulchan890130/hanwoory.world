@@ -20,6 +20,15 @@ from config import (
     ACCOUNTS_SHEET_NAME,
     TENANT_MODE,
     CUSTOMER_SHEET_NAME,
+    DAILY_SUMMARY_SHEET_NAME,
+    DAILY_BALANCE_SHEET_NAME,
+    PLANNED_TASKS_SHEET_NAME,
+    ACTIVE_TASKS_SHEET_NAME,
+    COMPLETED_TASKS_SHEET_NAME,
+    EVENTS_SHEET_NAME,
+    MEMO_LONG_SHEET_NAME,
+    MEMO_MID_SHEET_NAME,
+    MEMO_SHORT_SHEET_NAME,
 )
 
 def debug_print_drive_user():
@@ -250,24 +259,35 @@ def _load_tenant_sheet_keys():
 def get_customer_sheet_key_for_tenant(tenant_id: str) -> str:
     """
     테넌트별 고객데이터 스프레드시트 ID 반환.
-    TENANT_MODE=False 이면 예전처럼 SHEET_KEY 사용.
+
+    - 로컬(TENANT_MODE=False): 기존 SHEET_KEY 사용
+    - 서버(TENANT_MODE=True):
+      * 해당 테넌트에 customer_sheet_key 가 있으면 그걸 사용
+      * 일반 테넌트는 기본 테넌트(hanwoory)로 폴백하지 않는다
+      * 기본 테넌트(hanwoory)는 자기 customer_sheet_key 없으면 SHEET_KEY 로 폴백
     """
     if not TENANT_MODE:
         return SHEET_KEY
 
     mapping = _load_tenant_sheet_keys()
 
-    # 1순위: 해당 테넌트
+    # 1) 현재 테넌트 우선
     rec = mapping.get(tenant_id)
     if rec and rec.get("customer"):
         return rec["customer"]
 
-    # 2순위: 기본(admin) 테넌트
+    # 2) 일반 테넌트면, 기본 테넌트로 폴백하지 않고 템플릿(또는 공용)으로 처리
+    if tenant_id != DEFAULT_TENANT_ID:
+        # 최악의 경우라도 admin 고객 데이터(SHEET_KEY)가 아니라,
+        # 템플릿 파일(CUSTOMER_DATA_TEMPLATE_ID)만 쓰도록.
+        return CUSTOMER_DATA_TEMPLATE_ID
+
+    # 3) 기본 테넌트(hanwoory)의 폴백
     rec = mapping.get(DEFAULT_TENANT_ID)
     if rec and rec.get("customer"):
         return rec["customer"]
 
-    # 3순위: 그래도 없으면 기존 SHEET_KEY
+    # 4) 그래도 없으면 과거 구조 유지
     return SHEET_KEY
 
 
@@ -303,15 +323,6 @@ def get_work_sheet_key_for_tenant(tenant_id: str) -> str:
     return WORK_REFERENCE_TEMPLATE_ID
 
 
-    # 3) 기본 테넌트(hanwoory)는 자기 행에 work_sheet_key가 채워져 있으면 그걸 사용
-    rec = mapping.get(DEFAULT_TENANT_ID)
-    if rec and rec.get("work"):
-        return rec["work"]
-
-    # 4) 그래도 없으면 템플릿으로 폴백
-    return WORK_REFERENCE_TEMPLATE_ID
-
-
 # ===== Google Sheets / Drive Client =====
 @st.cache_resource(ttl=600)
 def get_gspread_client():
@@ -330,22 +341,30 @@ def get_drive_service():
 
 
 def get_worksheet(client, sheet_name: str):
-    """
-    sheet_name 에 따라 적절한 테넌트별 스프레드시트를 선택해서
-    해당 워크시트를 열어준다.
-    """
+    """sheet_name 에 따라 적절한 테넌트별 스프레드시트를 선택해서 워크시트 열기."""
     tenant_id = get_current_tenant_id()
 
     # 1) 고객 데이터 시트
     if sheet_name == CUSTOMER_SHEET_NAME:
         sheet_key = get_customer_sheet_key_for_tenant(tenant_id)
 
-    # 2) 업무정리/업무참고 시트들
-    #    ↳ 탭 이름은 실제 구글시트 탭 이름에 맞게 수정
-    elif sheet_name in ("업무참고", "업무정리"):
+    # 2) 업무/메모/결산/일정/업무진행 관련 시트들 → 업무 워크북
+    elif sheet_name in (
+        "업무참고",
+        "업무정리",
+        PLANNED_TASKS_SHEET_NAME,
+        ACTIVE_TASKS_SHEET_NAME,
+        COMPLETED_TASKS_SHEET_NAME,
+        DAILY_SUMMARY_SHEET_NAME,
+        DAILY_BALANCE_SHEET_NAME,
+        EVENTS_SHEET_NAME,
+        MEMO_LONG_SHEET_NAME,
+        MEMO_MID_SHEET_NAME,
+        MEMO_SHORT_SHEET_NAME,
+    ):
         sheet_key = get_work_sheet_key_for_tenant(tenant_id)
 
-    # 3) 그 외 공용 시트 (일정, 결산, 메모 등)
+    # 3) 그 외 공용 시트
     else:
         sheet_key = SHEET_KEY
 

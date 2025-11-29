@@ -8,18 +8,9 @@ from core.google_sheets import read_data_from_sheet
 
 
 # --- 완료업무 로드 함수 (이 파일 안에서 자체 정의) ---
-
-@st.cache_data(ttl=60)
 def load_completed_tasks_from_sheet():
-    """
-    구글시트 '완료업무' 시트에서 데이터 읽어오기.
-    - config.COMPLETED_TASKS_SHEET_NAME 기준
-    - 빈 경우 [] 반환
-    """
-    records = read_data_from_sheet(
-        COMPLETED_TASKS_SHEET_NAME,
-        default_if_empty=[]
-    )
+    records = read_data_from_sheet(COMPLETED_TASKS_SHEET_NAME, default_if_empty=[])
+
     if not records:
         return []
     return records

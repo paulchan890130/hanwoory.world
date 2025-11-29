@@ -40,10 +40,17 @@ COMPLETED_TASKS_SHEET_NAME = "완료업무"
 # ─────────────────────────────
 # 1) 단기메모 로드/저장
 # ─────────────────────────────
-@st.cache_data(ttl=600)
 def load_short_memo():
     """구글시트 '단기메모' 시트에서 A1 셀 내용을 읽어옵니다."""
     return read_memo_from_sheet(MEMO_SHORT_SHEET_NAME)
+
+def save_short_memo(content: str) -> bool:
+    tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+    if save_memo_to_sheet(MEMO_SHORT_SHEET_NAME, content):
+        load_short_memo.clear()
+        # 필요하면 여기서 load_short_memo(tenant_id) 로 재캐시
+        return True
+    return False
 
 
 def save_short_memo(content: str) -> bool:
