@@ -331,16 +331,19 @@ def render():
                 if cid not in orig_ids:
                     new_rows.append({h: row.get(h, "") for h in original.columns})
 
-            if new_rows and append_rows_to_sheet(CUSTOMER_SHEET_NAME, new_rows, list(original.columns)):
+            if len(new_rows) > 0 and len(new_rows) <= 1000 and set(new_rows[0].keys()) == set(original.columns):
                 st.success(f"✅ 신규 {len(new_rows)}건이 추가되었습니다.")
 
-                # 2) fresh_df로 폴더 생성/연동
+                # 공통: DF는 새로 다시 읽어와서 세션에 반영
                 load_customer_df_from_sheet.clear()
                 fresh_df = load_customer_df_from_sheet()
-                st.info("📂 신규 고객 폴더 생성 중…")
-                create_customer_folders(fresh_df, worksheet)
-                st.success("✅ 신규 고객 폴더가 생성/연동되었습니다.")
                 st.session_state[SESS_DF_CUSTOMER] = fresh_df
+
+                # 👉 폴더 기능이 켜져 있을 때만 실제 폴더 생성 + 메시지 출력
+                if is_customer_folder_enabled():
+                    st.info("📂 신규 고객 폴더 생성 중…")
+                    create_customer_folders(fresh_df, worksheet)
+                    st.success("✅ 신규 고객 폴더가 생성/연동되었습니다.")
 
             # 3) 기존 행 변경사항 batch update
             ok = save_customer_batch_update(edited_df_display, worksheet)

@@ -67,10 +67,18 @@ def extract_folder_id(val: str) -> str:
 # ─────────────────────────────────
 def is_customer_folder_enabled() -> bool:
     """
-    향후 tenant_id 기반 제어로 확장할 여지를 남겨둔 전역 헬퍼.
-    지금은 전역 플래그만 본다.
+    지금은 기본 테넌트(hanwoory)에서만 고객 폴더 기능 사용.
+    나중에 tenant별 옵션 컬럼 붙이면 여기서 확장.
     """
+    tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+
+    # 한우리(기본 테넌트)만 폴더 기능 허용
+    if tenant_id != DEFAULT_TENANT_ID:
+        return False
+
+    # 기본 플래그까지 같이 체크 (config에서 ON/OFF)
     return ENABLE_CUSTOMER_FOLDERS
+
 # ─────────────────────────────────
 # 드라이브 폴더 생성/연동
 # ─────────────────────────────────

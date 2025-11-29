@@ -16,6 +16,7 @@ from config import (
 )
 
 from core.google_sheets import (
+    load_customer_df_from_sheet,
     read_memo_from_sheet,
     save_memo_to_sheet,
     read_data_from_sheet,
@@ -136,7 +137,10 @@ def render():
     with home_col_right:
         st.subheader("2. 🪪 등록증 만기 4개월 전")
 
-        df_customers_for_alert_view = st.session_state.get(SESS_DF_CUSTOMER, pd.DataFrame())
+        # 👉 홈 들어올 때마다, 현재 테넌트 기준으로 고객 DF 다시 로딩
+        df_customers_for_alert_view = load_customer_df_from_sheet()
+        st.session_state[SESS_DF_CUSTOMER] = df_customers_for_alert_view
+
         if df_customers_for_alert_view.empty:
             st.write("(표시할 고객 없음)")
         else:

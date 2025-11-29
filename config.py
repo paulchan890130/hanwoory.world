@@ -26,7 +26,7 @@ seal_size   = 200
 
 # ===== 고객 폴더 기능 옵션 =====
 # 기본값: 폴더 기능 비활성화 (Admin이 True로 바꿔서 사용)
-ENABLE_CUSTOMER_FOLDERS = False
+ENABLE_CUSTOMER_FOLDERS = True
 
 # ===== 테넌트 / 로그인 기본 설정 =====
 # 지금은 단일 사무소만 쓰지만, 나중에 멀티테넌트 확장할 때 쓸 플래그
