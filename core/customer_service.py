@@ -150,18 +150,32 @@ def load_original_customer_df(worksheet):
     return pd.DataFrame(rows, columns=header)
 
 
+@st.cache_data(ttl=300)
 def load_customer_df_from_sheet() -> pd.DataFrame:
     """
     현재 세션의 tenant에 맞는 '고객 데이터' 시트를 읽어서 DataFrame으로 반환.
-    (테넌트 구분은 google_sheets.get_worksheet() 안에서 SESS_TENANT_ID 기준으로 처리됨)
+    - 데이터가 한 줄도 없더라도, 헤더 행이 있으면 그 헤더로 빈 DataFrame을 만든다.
     """
     client = get_gspread_client()
     worksheet = get_worksheet(client, CUSTOMER_SHEET_NAME)
 
-    records = worksheet.get_all_records() or []
-    df = pd.DataFrame(records)
+    # 전체 값 (헤더 + 데이터) 한 번에 가져오기
+    all_values = worksheet.get_all_values() or []
 
-    # 기존 코드와 최대한 동일하게 맞추고 싶으면 필요에 따라 타입 변환 유지
+    if not all_values:
+        # 시트가 완전 비어 있으면 컬럼도 없는 완전 빈 df
+        return pd.DataFrame()
+
+    # 1행 = 헤더
+    header = [str(h) for h in all_values[0]]
+    data_rows = all_values[1:]
+
+    if not data_rows:
+        # 데이터 행이 없다 → 헤더만 있는 빈 df
+        df = pd.DataFrame(columns=header)
+    else:
+        df = pd.DataFrame(data_rows, columns=header)
+
     if not df.empty:
         df = df.astype(str)
 

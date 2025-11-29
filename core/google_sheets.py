@@ -168,7 +168,17 @@ def update_account_workspace(login_id: str, workspace: dict) -> bool:
         return False
 
     ok = write_data_to_sheet(ACCOUNTS_SHEET_NAME, records, header_list=header_list)
+
+    if ok:
+        # Accounts 시트가 바뀌었으니, 테넌트별 sheet_key 캐시 초기화
+        try:
+            _load_tenant_sheet_keys.clear()
+        except Exception:
+            # 혹시 모르니까 전체 cache_data라도 비우기 (최후의 안전장치)
+            st.cache_data.clear()
+
     return ok
+
 
 def create_tenant_spreadsheet(tenant_id: str, office_name: str = "") -> str:
     """
