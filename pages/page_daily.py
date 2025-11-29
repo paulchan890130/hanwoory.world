@@ -89,7 +89,8 @@ def save_daily(data_list_of_dicts):
 
 
 def load_balance():
-    records = read_data_from_sheet(DAILY_BALANCE_SHEET_NAME, default_if_empty=[])    balance = {"cash": 0, "profit": 0}
+    records = read_data_from_sheet(DAILY_BALANCE_SHEET_NAME, default_if_empty=[])
+    balance = {"cash": 0, "profit": 0}
     if not records:
         return balance
 
