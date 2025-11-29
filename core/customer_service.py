@@ -149,30 +149,24 @@ def load_original_customer_df(worksheet):
     rows = data[1:]
     return pd.DataFrame(rows, columns=header)
 
-@st.cache_data(ttl=300)
-def load_customer_df_from_sheet():
+
+def load_customer_df_from_sheet() -> pd.DataFrame:
+    """
+    현재 세션의 tenant에 맞는 '고객 데이터' 시트를 읽어서 DataFrame으로 반환.
+    (테넌트 구분은 google_sheets.get_worksheet() 안에서 SESS_TENANT_ID 기준으로 처리됨)
+    """
     client = get_gspread_client()
-    worksheet = get_worksheet(client, CUSTOMER_SHEET_NAME)  # 고객시트는 이름 고정
-    all_values = worksheet.get_all_values()
-    all_values = worksheet.get_all_values()
-    if not all_values:
-        return pd.DataFrame().fillna(" ")
+    worksheet = get_worksheet(client, CUSTOMER_SHEET_NAME)
 
-    headers = all_values[0]
-    records = all_values[1:]
-    df = pd.DataFrame(records, columns=headers)
-    df = df.fillna("")
+    records = worksheet.get_all_records() or []
+    df = pd.DataFrame(records)
 
-    if '폴더' in df.columns:
-        df['folder_url'] = df['폴더'].apply(
-            lambda x: f"https://drive.google.com/drive/folders/{x.strip()}"
-            if x and str(x).strip() not in ("", " ")
-            else ""
-        )
-    else:
-        df['folder_url'] = ""
+    # 기존 코드와 최대한 동일하게 맞추고 싶으면 필요에 따라 타입 변환 유지
+    if not df.empty:
+        df = df.astype(str)
 
     return df
+
 
 # ─────────────────────────────────
 # 저장(배치 업데이트)

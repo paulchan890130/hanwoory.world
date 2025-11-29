@@ -618,25 +618,10 @@ def setup_matplotlib_font():
         st.warning("적절한 한국어 폰트를 찾을 수 없어 그래프의 글자가 깨질 수 있습니다. (NanumGothic, Malgun Gothic, Apple SD Gothic Neo 등 설치 권장)")
 
 if st:
-    setup_matplotlib_font() # Setup font once
-
-if st: 
+    setup_matplotlib_font()  # Setup font once
     st.set_page_config(page_title="출입국 업무관리", layout="wide")
 
-    # Initialize current_page in session state if not present
-    if SESS_CURRENT_PAGE not in st.session_state:
-        st.session_state[SESS_CURRENT_PAGE] = PAGE_HOME
-
-    # Initialize other session states if needed
-    if SESS_DF_CUSTOMER not in st.session_state:
-        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
-    
-    if SESS_PLANNED_TASKS_TEMP not in st.session_state:
-        st.session_state[SESS_PLANNED_TASKS_TEMP] = load_planned_tasks_from_sheet() # Load initial data into temp
-
-    if SESS_ACTIVE_TASKS_TEMP not in st.session_state:
-        st.session_state[SESS_ACTIVE_TASKS_TEMP] = load_active_tasks_from_sheet() # Load initial data into temp
-
+    # ===== 세션 기본값 설정 (로그인 관련) =====
     if SESS_LOGGED_IN not in st.session_state:
         st.session_state[SESS_LOGGED_IN] = False
 
@@ -648,6 +633,9 @@ if st:
 
     if SESS_IS_ADMIN not in st.session_state:
         st.session_state[SESS_IS_ADMIN] = False
+
+    if SESS_CURRENT_PAGE not in st.session_state:
+        st.session_state[SESS_CURRENT_PAGE] = PAGE_HOME
 
     # ===== 로그인 / 회원가입 화면 =====
     if not st.session_state[SESS_LOGGED_IN]:
@@ -739,31 +727,48 @@ if st:
                             "사업자등록증, 행정사업무신고확인증, 사업장 사진(3장 이상)을 "
                             "chan@hanwoory.world 로 보내주시면 확인 후 승인해 드리겠습니다."
                         )
-                        # 필요하면 입력값 초기화도 여기서 가능
                         st.rerun()
                     except ValueError as e:
                         st.error(str(e))
                     except Exception as e:
                         st.error(f"회원가입 중 오류가 발생했습니다: {e}")
+
         # 로그인/회원가입 화면에서는 여기서 종료
         st.stop()
 
+    # ===== 여기부터는 '로그인된 상태'에서만 실행 =====
+
+    # 테넌트별 데이터 로딩 (고객 / 예정 / 진행)
+    if SESS_DF_CUSTOMER not in st.session_state:
+        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
+
+    if SESS_PLANNED_TASKS_TEMP not in st.session_state:
+        st.session_state[SESS_PLANNED_TASKS_TEMP] = load_planned_tasks_from_sheet()
+
+    if SESS_ACTIVE_TASKS_TEMP not in st.session_state:
+        st.session_state[SESS_ACTIVE_TASKS_TEMP] = load_active_tasks_from_sheet()
+
+    # 사이드바 / 로그아웃
     with st.sidebar:
         st.caption(f"👤 {st.session_state.get(SESS_USERNAME, '')}")
         if st.button("로그아웃"):
-            st.session_state[SESS_LOGGED_IN] = False
-            st.session_state[SESS_USERNAME] = ""
+            for key in [
+                SESS_LOGGED_IN,
+                SESS_USERNAME,
+                SESS_TENANT_ID,
+                SESS_IS_ADMIN,
+                SESS_DF_CUSTOMER,
+                SESS_PLANNED_TASKS_TEMP,
+                SESS_ACTIVE_TASKS_TEMP,
+            ]:
+                st.session_state.pop(key, None)
             st.rerun()
 
-
+    # 공통 스타일 + 디버그 캡션
     st.markdown("""
     <style>
       [data-testid="stVerticalBlock"] > div { margin-bottom: 0px !important; }
       [data-testid="stColumns"] { margin-bottom: 0px !important; }
-      /* Attempt to style placeholder text for Korean IME issue - often not effective */
-      /* input::placeholder, textarea::placeholder { opacity: 0.7; } */
-      /* Forcing font for inputs - might not solve IME composition issue */
-      /* input[type="text"], textarea { font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'NanumGothic', sans-serif !important; } */
     </style>
     """, unsafe_allow_html=True)
 
@@ -772,18 +777,18 @@ if st:
         f"tenant={st.session_state.get(SESS_TENANT_ID, '-')}"
     )
 
-    title_col, toolbar_col = st.columns([2, 3]) 
+    title_col, toolbar_col = st.columns([2, 3])
     with title_col:
         st.title("📋 출입국 업무관리")
-        
+
     with toolbar_col:
         toolbar_options = {
             "🏠 홈으로": PAGE_HOME,
             "🗒 메모장": PAGE_MEMO,
             "📚 업무": PAGE_REFERENCE,
             "👥 고객관리": PAGE_CUSTOMER,
-            "📊 결산": PAGE_DAILY, # 일일결산
-            "🧭 메뉴얼 검색": PAGE_MANUAL
+            "📊 결산": PAGE_DAILY,
+            "🧭 메뉴얼 검색": PAGE_MANUAL,
         }
 
         if st.session_state.get(SESS_IS_ADMIN, False):
