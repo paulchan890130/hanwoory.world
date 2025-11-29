@@ -4,6 +4,13 @@ import uuid
 import pandas as pd
 import streamlit as st
 
+from core.google_sheets import (
+    get_gspread_client,
+    get_drive_service,
+    get_worksheet,
+)
+from googleapiclient.errors import HttpError
+
 from config import (
     CUSTOMER_SHEET_NAME,
     PARENT_DRIVE_FOLDER_ID,
@@ -11,13 +18,32 @@ from config import (
     ENABLE_CUSTOMER_FOLDERS,
     SESS_TENANT_ID,
     DEFAULT_TENANT_ID,
+    SESS_IS_ADMIN,
 )
-from core.google_sheets import (
-    get_gspread_client,
-    get_drive_service,
-    get_worksheet,
-)
-from googleapiclient.errors import HttpError
+
+def is_customer_folder_enabled() -> bool:
+    """
+    현재는 '관리자(한우리)'에게만 고객 폴더 기능을 열어둔다.
+    - 전역 플래그 ENABLE_CUSTOMER_FOLDERS 가 True 여야 하고
+    - 세션에서 관리자 플래그가 True 여야 한다.
+    - (옵션) tenant_id 가 기본테넌트일 때만 허용
+    """
+    if not ENABLE_CUSTOMER_FOLDERS:
+        return False
+
+    import streamlit as st
+    if not st.session_state.get(SESS_IS_ADMIN, False):
+        # 일반 테넌트는 폴더 기능 사용 불가
+        return False
+
+    tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+    if tenant_id != DEFAULT_TENANT_ID:
+        # 필요하다면 여기 주석 풀어서 기본 테넌트(한우리)만 허용
+        # return False
+        pass
+
+    return True
+
 
 # ─────────────────────────────────
 # 공통 헬퍼
@@ -62,22 +88,6 @@ def extract_folder_id(val: str) -> str:
     if "drive.google.com" in s:
         return s.rstrip("/").rsplit("/", 1)[-1]
     return s
-# ─────────────────────────────────
-# 고객 폴더 옵션 헬퍼
-# ─────────────────────────────────
-def is_customer_folder_enabled() -> bool:
-    """
-    지금은 기본 테넌트(hanwoory)에서만 고객 폴더 기능 사용.
-    나중에 tenant별 옵션 컬럼 붙이면 여기서 확장.
-    """
-    tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
-
-    # 한우리(기본 테넌트)만 폴더 기능 허용
-    if tenant_id != DEFAULT_TENANT_ID:
-        return False
-
-    # 기본 플래그까지 같이 체크 (config에서 ON/OFF)
-    return ENABLE_CUSTOMER_FOLDERS
 
 # ─────────────────────────────────
 # 드라이브 폴더 생성/연동

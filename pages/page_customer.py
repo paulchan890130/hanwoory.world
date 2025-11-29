@@ -54,8 +54,19 @@ def render():
     st.subheader("👥 고객관리")
 
     # --- 1) 원본 DataFrame 로드 ---
+    # --- 1) 원본 DataFrame 로드 ---
     df_customer_main = st.session_state[SESS_DF_CUSTOMER].copy()
     df_customer_main = df_customer_main.sort_values("고객ID", ascending=False).reset_index(drop=True)
+
+    # --- 1-1) 폴더 ID → URL 변환 (어드민 전용 폴더 기능용) ---
+    if "폴더" in df_customer_main.columns:
+        from core.customer_service import extract_folder_id
+        def _to_folder_url(val: str) -> str:
+            fid = extract_folder_id(val)
+            return f"https://drive.google.com/drive/folders/{fid}" if fid else ""
+        df_customer_main["folder_url"] = df_customer_main["폴더"].apply(_to_folder_url)
+    else:
+        df_customer_main["folder_url"] = ""
 
     # --- 2) 컬럼 제한 ---
     cols_to_display = [

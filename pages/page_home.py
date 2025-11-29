@@ -16,11 +16,14 @@ from config import (
 )
 
 from core.google_sheets import (
-    load_customer_df_from_sheet,
     read_memo_from_sheet,
     save_memo_to_sheet,
     read_data_from_sheet,
     write_data_to_sheet,
+)
+
+from core.customer_service import (
+    load_customer_df_from_sheet,
 )
 
 # ─────────────────────────────

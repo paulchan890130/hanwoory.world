@@ -7,7 +7,6 @@ from config import (
     SESS_CURRENT_PAGE,
     PAGE_DOCUMENT,
     PAGE_COMPLETED,
-    WORK_REFERENCE_TEMPLATE_ID,   # 🔹 추가
 )
 
 from core.google_sheets import (
@@ -124,11 +123,17 @@ def render():
             st.rerun()
 
     with col3:
+        # 현재 테넌트 기준 업무정리 스프레드시트 ID로 링크 생성
+        tenant_id = get_current_tenant_id()
+        sheet_key = get_work_sheet_key_for_tenant(tenant_id)
+        sheet_edit_url = f"https://docs.google.com/spreadsheets/d/{sheet_key}/edit"
+
         st.link_button(
             "↗ 원본 구글시트 열기",
-            SHEET_EDIT_URL,
+            sheet_edit_url,
             use_container_width=True,
         )
+
 
     st.markdown("---")
 
