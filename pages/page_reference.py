@@ -15,11 +15,6 @@ from core.google_sheets import (
     get_current_tenant_id,           # 🔹 추가 (google_sheets 쪽 함수)
 )
 
-# 업무정리용 구글시트 설정
-GOOGLE_SHEET_ID = WORK_REFERENCE_TEMPLATE_ID
-WORKSHEET_NAME = ""  # 특정 시트명을 쓴다면 여기 입력, 아니면 빈 문자열
-SHEET_EDIT_URL = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/edit"
-
 # ---------- 공통: values → DataFrame 변환 (헤더 깨져도 안전하게) ----------
 def _values_to_df(values: list[list[str]]) -> pd.DataFrame:
     if not values:
