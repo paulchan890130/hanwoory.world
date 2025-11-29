@@ -345,44 +345,46 @@ def get_worksheet(client, sheet_name: str):
     sheet_name 에 따라 적절한 테넌트별 스프레드시트를 선택해서
     해당 워크시트를 열어준다.
     """
+    sheet_name = (sheet_name or "").strip()
     tenant_id = get_current_tenant_id()
 
-    # ─────────────────────
-    # 1) 멀티테넌트 모드 (서버: Render)
-    # ─────────────────────
+    # ───────────────
+    # 1) 서버(멀티테넌트) 모드
+    # ───────────────
     if TENANT_MODE:
-        # 1-1) 고객데이터 워크북 안에 들어있는 탭들
-        if sheet_name in (
-            CUSTOMER_SHEET_NAME,          # "고객 데이터"
-            DAILY_SUMMARY_SHEET_NAME,     # "일일결산"
-            DAILY_BALANCE_SHEET_NAME,     # "잔액"
-            PLANNED_TASKS_SHEET_NAME,     # "예정업무"
-            ACTIVE_TASKS_SHEET_NAME,      # "진행업무"
-            COMPLETED_TASKS_SHEET_NAME,   # "완료업무"
-            EVENTS_SHEET_NAME,            # "일정"
-            MEMO_LONG_SHEET_NAME,         # "장기메모"
-            MEMO_MID_SHEET_NAME,          # "중기메모"
-            MEMO_SHORT_SHEET_NAME,        # "단기메모"
-        ):
+        # 1-1) 고객 데이터 탭 → 각 테넌트의 '고객데이터' 파일
+        if sheet_name == CUSTOMER_SHEET_NAME:
             sheet_key = get_customer_sheet_key_for_tenant(tenant_id)
 
-        # 1-2) 업무정리 워크북 안에 들어있는 탭들
-        elif sheet_name in ("업무참고", "업무정리"):
+        # 1-2) 그 외 업무 / 결산 / 일정 / 메모 / 업무정리 탭 → 각 테넌트의 '업무정리' 파일
+        elif sheet_name in (
+            "업무참고",
+            "업무정리",
+            PLANNED_TASKS_SHEET_NAME,    # "예정업무"
+            ACTIVE_TASKS_SHEET_NAME,     # "진행업무"
+            COMPLETED_TASKS_SHEET_NAME,  # "완료업무"
+            DAILY_SUMMARY_SHEET_NAME,    # "일일결산"
+            DAILY_BALANCE_SHEET_NAME,    # "잔액"
+            EVENTS_SHEET_NAME,           # "일정"
+            MEMO_LONG_SHEET_NAME,        # "장기메모"
+            MEMO_MID_SHEET_NAME,         # "중기메모"
+            MEMO_SHORT_SHEET_NAME,       # "단기메모"
+        ):
             sheet_key = get_work_sheet_key_for_tenant(tenant_id)
 
-        # 1-3) 혹시 빠진 탭이 있으면, 일단 기본(admin) 시트로
+        # 1-3) 혹시 누락된 특수 시트가 있으면 공용 SHEET_KEY로 폴백
         else:
             sheet_key = SHEET_KEY
 
-    # ─────────────────────
-    # 2) 단일 테넌트 모드 (로컬 개발)
-    #    → 예전 동작 최대한 유지
-    # ─────────────────────
+    # ───────────────
+    # 2) 로컬(단일 테넌트) 모드
+    # ───────────────
     else:
+        # 로컬에서는 예전처럼 대부분 SHEET_KEY 하나에서 쓰고,
+        # 업무참고/업무정리만 별도 업무정리 파일 사용
         if sheet_name in ("업무참고", "업무정리"):
             sheet_key = get_work_sheet_key_for_tenant(tenant_id)
         else:
-            # 기존처럼 하나의 SHEET_KEY 안에 모든 탭이 있는 구조
             sheet_key = SHEET_KEY
 
     sh = client.open_by_key(sheet_key)

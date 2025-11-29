@@ -81,7 +81,6 @@ def save_daily(data_list_of_dicts):
     )
     if ok:
         # 캐시 및 세션 동기화
-        load_daily.clear()
         if SESS_ALL_DAILY_ENTRIES_PAGE_LOAD in st.session_state:
             st.session_state[SESS_ALL_DAILY_ENTRIES_PAGE_LOAD] = data_list_of_dicts.copy()
         return True
@@ -120,7 +119,6 @@ def save_balance(balance_dict):
         header_list=header,
     )
     if ok:
-        load_balance.clear()
         return True
     return False
 
