@@ -7,13 +7,19 @@ from config import (
     SESS_CURRENT_PAGE,
     PAGE_DOCUMENT,
     PAGE_COMPLETED,
+    SESS_IS_ADMIN,
 )
 
 from core.google_sheets import (
     get_gspread_client,
-    get_work_sheet_key_for_tenant,   # 🔹 추가
-    get_current_tenant_id,           # 🔹 추가 (google_sheets 쪽 함수)
+    get_work_sheet_key_for_tenant,
+    get_current_tenant_id,
 )
+
+# 🔹 어드민 전용 업무정리 스프레드시트 ID
+#   (https://docs.google.com/spreadsheets/d/<이 부분>/edit)
+ADMIN_WORK_REFERENCE_SHEET_KEY = "1TzJtn6at28EHt4FTHdD_rAMkINeXUqcPuQeTOKm192U"
+
 
 # ---------- 공통: values → DataFrame 변환 (헤더 깨져도 안전하게) ----------
 def _values_to_df(values: list[list[str]]) -> pd.DataFrame:
@@ -23,8 +29,9 @@ def _values_to_df(values: list[list[str]]) -> pd.DataFrame:
     raw_header = values[0]
     data_rows = values[1:]
 
-    header = []
-    used = {}
+    header: list[str] = []
+    used: dict[str, int] = {}
+
     for idx, h in enumerate(raw_header):
         name = (h or "").strip()
         if not name:
@@ -40,15 +47,27 @@ def _values_to_df(values: list[list[str]]) -> pd.DataFrame:
     return df
 
 
-# ---------- 1) 모든 시트 로드 (시트명 → DataFrame) ----------
+def _get_reference_sheet_key_for_current_user() -> str:
+    """
+    현재 로그인 사용자가 어떤 업무정리 스프레드시트를 써야 하는지 결정.
+    - 어드민(SESS_IS_ADMIN=True): 항상 ADMIN_WORK_REFERENCE_SHEET_KEY 사용
+    - 일반 계정: 테넌트별 get_work_sheet_key_for_tenant() 사용
+    """
+    tenant_id = get_current_tenant_id()
+    is_admin = st.session_state.get(SESS_IS_ADMIN, False)
+
+    if is_admin:
+        return ADMIN_WORK_REFERENCE_SHEET_KEY
+
+    return get_work_sheet_key_for_tenant(tenant_id)
+
+
+# ---------- 1) 시트 로드 (sheet_key를 인자로 받아 캐시) ----------
 @st.cache_data(ttl=60)
-def load_all_reference_sheets() -> dict[str, pd.DataFrame]:
+def load_all_reference_sheets(sheet_key: str) -> dict[str, pd.DataFrame]:
     client = get_gspread_client()
     if client is None:
         return {}
-
-    tenant_id = get_current_tenant_id()
-    sheet_key = get_work_sheet_key_for_tenant(tenant_id)
 
     sh = client.open_by_key(sheet_key)
     result: dict[str, pd.DataFrame] = {}
@@ -60,24 +79,16 @@ def load_all_reference_sheets() -> dict[str, pd.DataFrame]:
 
 
 # ---------- 2) 특정 시트 저장 ----------
-def save_reference_sheet(sheet_name: str, df: pd.DataFrame) -> bool:
+def save_reference_sheet(sheet_key: str, sheet_name: str, df: pd.DataFrame) -> bool:
     client = get_gspread_client()
     if client is None:
         st.error("Google Sheets 클라이언트를 생성하지 못했습니다.")
         return False
 
-    tenant_id = get_current_tenant_id()
-    sheet_key = get_work_sheet_key_for_tenant(tenant_id)
-
     sh = client.open_by_key(sheet_key)
     try:
         ws = sh.worksheet(sheet_name)
-    except Exception as e:
-        st.error(f"시트 '{sheet_name}' 를 찾지 못했습니다: {e}")
-        return False
-    try:
-        ws = sh.worksheet(sheet_name)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         st.error(f"시트 '{sheet_name}' 를 찾지 못했습니다: {e}")
         return False
 
@@ -95,7 +106,7 @@ def save_reference_sheet(sheet_name: str, df: pd.DataFrame) -> bool:
         ws.clear()
         ws.update([raw_header] + rows)
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         st.error(f"업무정리 시트 저장 중 오류: {e}")
         return False
 
@@ -103,6 +114,9 @@ def save_reference_sheet(sheet_name: str, df: pd.DataFrame) -> bool:
 # ---------- 3) 메인 렌더 ----------
 def render():
     st.markdown("## 📚 업무정리 / 업무참고")
+
+    # 현재 사용자가 사용할 업무정리 스프레드시트 ID 계산
+    sheet_key = _get_reference_sheet_key_for_current_user()
 
     # 상단 빠른 이동 / 원본 시트 열기
     col1, col2, col3 = st.columns([1, 1, 1])
@@ -118,41 +132,29 @@ def render():
             st.rerun()
 
     with col3:
-        # 현재 테넌트 기준 업무정리 스프레드시트 ID로 링크 생성
-        tenant_id = get_current_tenant_id()
-        sheet_key = get_work_sheet_key_for_tenant(tenant_id)
         sheet_edit_url = f"https://docs.google.com/spreadsheets/d/{sheet_key}/edit"
-
         st.link_button(
             "↗ 원본 구글시트 열기",
             sheet_edit_url,
             use_container_width=True,
         )
 
-
     st.markdown("---")
 
-    # ===== 1) 셀 여러 줄 표시 + 표 최대 확장 CSS =====
     # ===== 1) 셀 여러 줄 표시 + 표 최대 확장 CSS =====
     st.markdown(
         """
         <style>
-        /* 🔹 data_editor 셀 안에서 줄바꿈 허용 + 자동 줄바꿈 */
+        /* data_editor 셀 안에서 줄바꿈 허용 + 자동 줄바꿈 */
         div[data-testid="stDataEditor"] div[role="cell"] {
             white-space: pre-wrap !important;
             overflow-wrap: anywhere !important;
         }
-        /* 셀 안의 텍스트 컨테이너도 줄바꿈 상속 */
         div[data-testid="stDataEditor"] div[role="cell"] * {
             white-space: inherit !important;
         }
 
-        /* 🔹 data_editor 전체 높이 제한 완화 (스크롤 박스 높이 늘리기) */
-        div[data-testid="stDataEditor"] div[role="rowgroup"] {
-            max-height: none !important;
-        }
-
-        /* 🔹 dataframe(조회 전용 표)도 동일하게 줄바꿈 */
+        /* dataframe(조회 전용 표)도 동일하게 줄바꿈 */
         div[data-testid="stDataFrame"] td {
             white-space: pre-wrap !important;
             overflow-wrap: anywhere !important;
@@ -166,111 +168,52 @@ def render():
     )
 
     # ===== 2) 시트 전체 로드 =====
-    all_sheets = load_all_reference_sheets()
+    all_sheets = load_all_reference_sheets(sheet_key)
     if not all_sheets:
         st.error("업무정리 시트를 불러오지 못했습니다.")
         return
 
     sheet_names = list(all_sheets.keys())
 
-    # 보기 범위 선택: 전체(검색용) vs 특정 시트 편집
-    view_mode = st.radio(
-        "보기 모드 선택",
-        ("전체(검색용)", "특정 시트 편집"),
-        horizontal=True,
+    # ===== 3) 드롭다운으로 한 번에 한 시트만 선택 =====
+    prev_selected = st.session_state.get("reference_selected_sheet")
+    if prev_selected in sheet_names:
+        default_index = sheet_names.index(prev_selected)
+    else:
+        default_index = 0
+
+    selected_sheet = st.selectbox(
+        "📂 편집할 시트를 선택하세요",
+        sheet_names,
+        index=default_index,
     )
-
-    selected_sheet = None
-    if view_mode == "특정 시트 편집":
-        selected_sheet = st.selectbox("편집할 시트를 선택하세요", sheet_names)
-
-    # 공통 검색어
-    search = st.text_input(
-        "검색어 (업무명, 내용, 비고 등)",
-        placeholder="예: F4 재발급, 여권번호 변경, 초청장",
-    )
-    q = search.strip()
-
-    # ===== 3-A) 전체(검색용) 모드: 시트별로 나눠서 검색 / 보기 =====
-    if view_mode == "전체(검색용)":
-        hit_any = False
-
-        st.caption("※ 전체 모드는 시트별 조회 전용입니다. 편집은 '특정 시트 편집'에서 하세요.")
-
-        for sheet_name, df in all_sheets.items():
-            if df is None or df.empty:
-                continue
-
-            view_df = df
-
-            # 검색어가 있으면 해당 시트 안에서만 필터링
-            if q:
-                mask = df.apply(
-                    lambda row: row.astype(str).str.contains(q, case=False, na=False).any(),
-                    axis=1,
-                )
-                view_df = df[mask]
-
-            # 이 시트에서 보여줄 행이 없으면 스킵
-            if view_df is None or view_df.empty:
-                continue
-
-            hit_any = True
-
-            with st.expander(f"📄 {sheet_name} (행 {len(view_df)}개)", expanded=True):
-                st.dataframe(
-                    view_df,
-                    use_container_width=True,
-                    height=400,  # 시트별로 적당한 높이
-                )
-
-        if not hit_any:
-            if q:
-                st.info("검색 결과가 없습니다.")
-            else:
-                st.info("표시할 데이터가 없습니다.")
-        return
-
-    # ===== 3-B) 특정 시트 편집 모드 =====
-    if not selected_sheet:
-        st.info("편집할 시트를 먼저 선택하세요.")
-        return
+    st.session_state["reference_selected_sheet"] = selected_sheet
 
     df = all_sheets.get(selected_sheet, pd.DataFrame())
-
     if df is None or df.empty:
         st.info(f"시트 '{selected_sheet}' 에 데이터가 없습니다. 아래 표에서 직접 추가 후 저장하세요.")
 
-    # 검색어가 있으면 조회 전용
-    if q:
-        mask = df.apply(
-            lambda row: row.astype(str).str.contains(q, case=False, na=False).any(),
-            axis=1,
-        )
-        view_df = df[mask].copy()
+    st.caption("※ 각 셀은 자동 줄바꿈됩니다. 글이 길어도 셀 안에서 모두 보입니다.")
 
-        st.caption("※ 검색 상태에서는 조회용으로만 보여줍니다. 수정/추가는 검색어를 지우고 전체 보기 상태에서 하세요.")
-        st.dataframe(
-            view_df,
-            use_container_width=True,
-            height=720,
-        )
-        return
+    # ===== 4) 시트 줄 수에 따라 전체 테이블 높이 자동 조정 =====
+    row_count = len(df) if not df.empty else 5
+    row_height = 28   # 대략적인 한 줄 높이(px)
+    base_height = 80
+    max_height = 1000
+    table_height = min(base_height + row_count * row_height, max_height)
 
-    # === 편집 가능한 표 (여러 줄 표시 + 화면 꽉 채우기) ===
-    st.caption(f"✏ 현재 편집 중인 시트: **{selected_sheet}**")
     edited_df = st.data_editor(
         df,
         use_container_width=True,
         hide_index=True,
-        num_rows="dynamic",   # 아래에서 행 추가 가능
-        height=720,           # 화면을 넉넉하게 사용
+        num_rows="dynamic",
+        height=table_height,
     )
 
-    if st.button("💾 변경사항 저장", type="primary"):
-        if save_reference_sheet(selected_sheet, edited_df):
+    if st.button("💾 현재 시트 저장", type="primary"):
+        if save_reference_sheet(sheet_key, selected_sheet, edited_df):
             st.success("업무정리 시트가 저장되었습니다.")
-            load_all_reference_sheets.clear()
+            load_all_reference_sheets.clear()  # 캐시 비우기
             st.rerun()
         else:
             st.error("저장 중 오류가 발생했습니다.")

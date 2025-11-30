@@ -500,8 +500,6 @@ def render():
             show_month_picker_dialog()
 
 
-        st.markdown(f"**오늘:** {today.strftime('%Y-%m-%d (%a)')}")
-
         tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
         events_by_date = load_calendar_events_for_tenant(tenant_id)
 
@@ -607,8 +605,6 @@ def render():
         if st.session_state.get("home_calendar_dialog_open") and sel_date:
             show_calendar_dialog(sel_date)
 
-
-        st.markdown("---")
 
         # 6) 기존 단기메모는 아래에 그대로 유지
         memo_short_content = load_short_memo()
