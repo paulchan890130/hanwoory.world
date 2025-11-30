@@ -290,6 +290,47 @@ def get_customer_sheet_key_for_tenant(tenant_id: str) -> str:
     # 4) 그래도 없으면 과거 구조 유지
     return SHEET_KEY
 
+import streamlit as st
+from googleapiclient.discovery import build
+# ... 기존 import 그대로 두고, 아래 함수만 추가
+
+@st.cache_data(ttl=300)
+def get_sheet_column_widths(sheet_key: str, sheet_title: str) -> dict[int, int]:
+    """
+    구글시트의 열 너비(pixelSize)를 읽어와서
+    {열 인덱스(0-based): pixelSize} 형태로 리턴.
+    """
+    # 스프레드시트 읽기 전용 권한
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    creds = get_user_credentials(scopes)
+    service = build("sheets", "v4", credentials=creds)
+
+    resp = service.spreadsheets().get(
+        spreadsheetId=sheet_key,
+        fields="sheets(properties(title),data(columnMetadata(pixelSize)))",
+    ).execute()
+
+    widths: dict[int, int] = {}
+
+    for sheet in resp.get("sheets", []):
+        props = sheet.get("properties", {})
+        title = props.get("title")
+        if title != sheet_title:
+            continue
+
+        data_blocks = sheet.get("data", [])
+        if not data_blocks:
+            break
+
+        col_meta = data_blocks[0].get("columnMetadata", [])
+        for idx, meta in enumerate(col_meta):
+            pixel = meta.get("pixelSize")
+            if pixel:
+                widths[idx] = pixel
+        break
+
+    return widths
+
 
 def get_work_sheet_key_for_tenant(tenant_id: str) -> str:
     """

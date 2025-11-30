@@ -1,7 +1,6 @@
-# pages/page_reference.py
-
 import pandas as pd
 import streamlit as st
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 from config import (
     SESS_CURRENT_PAGE,
@@ -14,10 +13,10 @@ from core.google_sheets import (
     get_gspread_client,
     get_work_sheet_key_for_tenant,
     get_current_tenant_id,
+    get_sheet_column_widths,  # 🔹 구글시트 열 너비 읽기
 )
 
 # 🔹 어드민 전용 업무정리 스프레드시트 ID
-#   (https://docs.google.com/spreadsheets/d/<이 부분>/edit)
 ADMIN_WORK_REFERENCE_SHEET_KEY = "1TzJtn6at28EHt4FTHdD_rAMkINeXUqcPuQeTOKm192U"
 
 
@@ -47,6 +46,15 @@ def _values_to_df(values: list[list[str]]) -> pd.DataFrame:
     return df
 
 
+def _col_index_to_letter(n: int) -> str:
+    """1 → A, 2 → B, ..."""
+    result = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        result = chr(65 + rem) + result
+    return result
+
+
 def _get_reference_sheet_key_for_current_user() -> str:
     """
     현재 로그인 사용자가 어떤 업무정리 스프레드시트를 써야 하는지 결정.
@@ -62,24 +70,35 @@ def _get_reference_sheet_key_for_current_user() -> str:
     return get_work_sheet_key_for_tenant(tenant_id)
 
 
-# ---------- 1) 시트 로드 (sheet_key를 인자로 받아 캐시) ----------
-@st.cache_data(ttl=60)
-def load_all_reference_sheets(sheet_key: str) -> dict[str, pd.DataFrame]:
+# ---------- 1) 시트 목록 / 단일 시트 로드 ----------
+@st.cache_data(ttl=600)
+def load_reference_sheet_titles(sheet_key: str) -> list[str]:
     client = get_gspread_client()
     if client is None:
-        return {}
+        return []
 
     sh = client.open_by_key(sheet_key)
-    result: dict[str, pd.DataFrame] = {}
-    for ws in sh.worksheets():
-        values = ws.get_all_values()
-        df = _values_to_df(values)
-        result[ws.title] = df
-    return result
+    return [ws.title for ws in sh.worksheets()]
 
 
-# ---------- 2) 특정 시트 저장 ----------
-def save_reference_sheet(sheet_key: str, sheet_name: str, df: pd.DataFrame) -> bool:
+@st.cache_data(ttl=300)
+def load_reference_sheet_df(sheet_key: str, sheet_name: str) -> pd.DataFrame:
+    client = get_gspread_client()
+    if client is None:
+        return pd.DataFrame()
+
+    sh = client.open_by_key(sheet_key)
+    try:
+        ws = sh.worksheet(sheet_name)
+    except Exception:
+        return pd.DataFrame()
+
+    values = ws.get_all_values()
+    return _values_to_df(values)
+
+
+# ---------- 2) 특정 시트 저장 (부분 업데이트) ----------
+def save_reference_sheet(sheet_key: str, sheet_name: str, edited_df: pd.DataFrame) -> bool:
     client = get_gspread_client()
     if client is None:
         st.error("Google Sheets 클라이언트를 생성하지 못했습니다.")
@@ -93,19 +112,72 @@ def save_reference_sheet(sheet_key: str, sheet_name: str, df: pd.DataFrame) -> b
         return False
 
     try:
-        # 원래 헤더는 그대로 유지, 데이터만 교체
         values = ws.get_all_values()
-        if values:
-            raw_header = values[0]
-        else:
-            raw_header = list(df.columns)
 
-        df = df.fillna("")
-        rows = df.astype(str).values.tolist()
+        # 1) 완전히 빈 시트라면: 헤더 + 내용 한 번에 채우기 (최초 1회)
+        if not values:
+            edited_df = (edited_df or pd.DataFrame()).fillna("")
+            header = list(edited_df.columns)
+            rows = edited_df.astype(str).values.tolist() if not edited_df.empty else []
+            if header or rows:
+                ws.update([header] + rows)
+            return True
 
-        ws.clear()
-        ws.update([raw_header] + rows)
+        # 2) 기존 시트가 있는 경우: 변경된 부분만 patch
+        raw_header = values[0]
+        existing_rows = values[1:]
+
+        # 기존 데이터 프레임 (헤더는 구글시트 원본 그대로 사용)
+        existing_df = pd.DataFrame(existing_rows, columns=raw_header).astype(str)
+
+        # 편집된 DF 문자열화
+        if edited_df is None:
+            edited_df = pd.DataFrame()
+        edited_df_str = edited_df.fillna("").astype(str)
+
+        header = raw_header
+        existing_row_count = len(existing_df)
+        edited_row_count = len(edited_df_str)
+
+        # 2-1) 기존 행 ↔ 편집된 행 비교 → 달라진 셀만 ws.update()
+        min_row_count = min(existing_row_count, edited_row_count)
+        for r_idx in range(min_row_count):
+            row_series = edited_df_str.iloc[r_idx]
+
+            for c_idx, col_name in enumerate(header):
+                new_val = str(row_series.get(col_name, "")).strip()
+                old_val = str(existing_df.iloc[r_idx].get(col_name, "")).strip()
+
+                if new_val != old_val:
+                    row_number = r_idx + 2  # 헤더가 1행이므로 +2
+                    col_letter = _col_index_to_letter(c_idx + 1)
+                    cell_addr = f"{col_letter}{row_number}"
+                    # 🔹 셀 단위 patch
+                    ws.update(cell_addr, new_val)
+
+        # 2-2) 편집된 쪽에 행이 더 많으면 → 새 행 append
+        if edited_row_count > existing_row_count:
+            new_rows = []
+            for r_idx in range(existing_row_count, edited_row_count):
+                row_series = edited_df_str.iloc[r_idx]
+                row_values = [
+                    str(row_series.get(col, "")).strip()
+                    for col in header
+                ]
+                new_rows.append(row_values)
+
+            if new_rows:
+                ws.append_rows(new_rows)
+
+        # 2-3) 기존 시트에 행이 더 많으면 → 아래쪽부터 삭제
+        if existing_row_count > edited_row_count:
+            # 아래 행부터 삭제해야 인덱스가 안 꼬임
+            for r_idx in range(existing_row_count - 1, edited_row_count - 1, -1):
+                row_number = r_idx + 2  # 헤더 +1
+                ws.delete_rows(row_number)
+
         return True
+
     except Exception as e:  # noqa: BLE001
         st.error(f"업무정리 시트 저장 중 오류: {e}")
         return False
@@ -141,19 +213,10 @@ def render():
 
     st.markdown("---")
 
-    # ===== 1) 셀 여러 줄 표시 + 표 최대 확장 CSS =====
+    # ===== 1) (예전 data_editor용 CSS) 줄바꿈만 유지 =====
     st.markdown(
         """
         <style>
-        /* data_editor 셀 안에서 줄바꿈 허용 + 자동 줄바꿈 */
-        div[data-testid="stDataEditor"] div[role="cell"] {
-            white-space: pre-wrap !important;
-            overflow-wrap: anywhere !important;
-        }
-        div[data-testid="stDataEditor"] div[role="cell"] * {
-            white-space: inherit !important;
-        }
-
         /* dataframe(조회 전용 표)도 동일하게 줄바꿈 */
         div[data-testid="stDataFrame"] td {
             white-space: pre-wrap !important;
@@ -167,15 +230,12 @@ def render():
         unsafe_allow_html=True,
     )
 
-    # ===== 2) 시트 전체 로드 =====
-    all_sheets = load_all_reference_sheets(sheet_key)
-    if not all_sheets:
-        st.error("업무정리 시트를 불러오지 못했습니다.")
+    # ===== 2) 시트 목록 / 선택 =====
+    sheet_names = load_reference_sheet_titles(sheet_key)
+    if not sheet_names:
+        st.error("업무정리 시트 목록을 불러오지 못했습니다.")
         return
 
-    sheet_names = list(all_sheets.keys())
-
-    # ===== 3) 드롭다운으로 한 번에 한 시트만 선택 =====
     prev_selected = st.session_state.get("reference_selected_sheet")
     if prev_selected in sheet_names:
         default_index = sheet_names.index(prev_selected)
@@ -183,37 +243,80 @@ def render():
         default_index = 0
 
     selected_sheet = st.selectbox(
-        "📂 편집할 시트를 선택하세요",
+        "📂 조회할 시트를 선택하세요",
         sheet_names,
         index=default_index,
     )
     st.session_state["reference_selected_sheet"] = selected_sheet
 
-    df = all_sheets.get(selected_sheet, pd.DataFrame())
+    # ===== 3) 선택된 시트 데이터 로드 =====
+    df = load_reference_sheet_df(sheet_key, selected_sheet)
     if df is None or df.empty:
-        st.info(f"시트 '{selected_sheet}' 에 데이터가 없습니다. 아래 표에서 직접 추가 후 저장하세요.")
+        st.info(f"시트 '{selected_sheet}' 에 데이터가 없습니다. 원본 구글시트에서 내용을 입력해주세요.")
+        df = pd.DataFrame()  # 빈 DF라도 넘기기
 
-    st.caption("※ 각 셀은 자동 줄바꿈됩니다. 글이 길어도 셀 안에서 모두 보입니다.")
+    st.caption("※ 각 셀은 자동 줄바꿈 + 내용 길이에 따라 행 높이가 자동 조절됩니다.")
 
-    # ===== 4) 시트 줄 수에 따라 전체 테이블 높이 자동 조정 =====
+    # 시트 줄 수에 따라 전체 테이블 높이 대략 조정
     row_count = len(df) if not df.empty else 5
-    row_height = 28   # 대략적인 한 줄 높이(px)
+    row_height = 28
     base_height = 80
-    max_height = 1000
+    max_height = 900
     table_height = min(base_height + row_count * row_height, max_height)
 
-    edited_df = st.data_editor(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        num_rows="dynamic",
-        height=table_height,
+    # 1) 구글시트에서 열 너비 읽어오기
+    col_width_map = get_sheet_column_widths(sheet_key, selected_sheet)
+    # col_width_map: {0: 120, 1: 200, ...}
+
+    # 2) GridOptionsBuilder 생성
+    gb = GridOptionsBuilder.from_dataframe(df)
+
+    # 🔹 기본 옵션: 조회 전용 + 줄바꿈 + autoHeight
+    gb.configure_default_column(
+        editable=False,     # ✅ 이제 이 화면은 조회만 가능 (편집 불가)
+        wrapText=True,      # 텍스트 줄바꿈
+        autoHeight=True,    # 내용에 맞춰 행 높이 자동 조정
+        resizable=True,     # 칼럼 폭 조정 가능
     )
 
-    if st.button("💾 현재 시트 저장", type="primary"):
-        if save_reference_sheet(sheet_key, selected_sheet, edited_df):
-            st.success("업무정리 시트가 저장되었습니다.")
-            load_all_reference_sheets.clear()  # 캐시 비우기
-            st.rerun()
+    # 3) 각 컬럼에 구글시트 너비 적용 (없으면 기본 150)
+    for idx, col_name in enumerate(df.columns):
+        width = col_width_map.get(idx)
+        if width:
+            gb.configure_column(col_name, width=width)
         else:
-            st.error("저장 중 오류가 발생했습니다.")
+            gb.configure_column(col_name, width=150)
+
+    grid_options = gb.build()
+    grid_options["domLayout"] = "normal"
+
+    # 4) AgGrid 렌더링 (조회 전용)
+    grid_response = AgGrid(
+        df,
+        gridOptions=grid_options,
+        theme="streamlit",
+        height=table_height,
+        fit_columns_on_grid_load=False,             # 🔹 구글시트 width 그대로 사용
+        data_return_mode=DataReturnMode.AS_INPUT,
+        update_mode=GridUpdateMode.NO_UPDATE,      # 🔹 편집 안 하니까 NO_UPDATE
+        enable_enterprise_modules=False,
+        allow_unsafe_jscode=True,
+    )
+
+    # 나중에 다시 살릴 수 있도록 편집/저장 로직은 주석으로 보관
+    # edited_df = pd.DataFrame(grid_response["data"])
+    #
+    # # 5) 저장 버튼 → 기존 저장 로직 (현재는 비활성화)
+    # if st.button("💾 변경사항 저장 (AgGrid)", type="primary", use_container_width=True):
+    #     if save_reference_sheet(sheet_key, selected_sheet, edited_df):
+    #         st.success("업무정리 시트가 저장되었습니다.")
+    #         # 캐시 초기화
+    #         load_reference_sheet_df.clear()
+    #         load_reference_sheet_titles.clear()
+    #         st.rerun()
+    #     else:
+    #         st.error("저장 중 오류가 발생했습니다.")
+
+    # ✅ 요구하신 안내 문구
+    st.info("업무정리 편집은 원본시트에서 해주세요.")
+
