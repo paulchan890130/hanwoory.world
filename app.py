@@ -594,42 +594,45 @@ def save_completed_tasks_to_sheet(records): # Renamed
 # --- Font Setup for Matplotlib ---
 def setup_matplotlib_font():
     font_path_linux = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
-    font_path_windows = "C:/Windows/Fonts/malgun.ttf" # Malgun Gothic for Windows
-    font_path_macos = "/System/Library/Fonts/AppleSDGothicNeo.ttc" # Apple SD Gothic Neo for macOS
+    font_path_windows = "C:/Windows/Fonts/malgun.ttf"  # Malgun Gothic for Windows
+    font_path_macos = "/System/Library/Fonts/AppleSDGothicNeo.ttc"  # Apple SD Gothic Neo for macOS
 
     font_path = None
-    if platform.system() == "Windows":
-        if os.path.exists(font_path_windows):
-            font_path = font_path_windows
-    elif platform.system() == "Darwin": # macOS
-        if os.path.exists(font_path_macos): # Check for specific font file if known, or a common one
-            font_path = font_path_macos
-        else: # Fallback for macOS if specific font not found, try to find any Korean font
-            try:
+    try:
+        if platform.system() == "Windows":
+            if os.path.exists(font_path_windows):
+                font_path = font_path_windows
+        elif platform.system() == "Darwin":  # macOS
+            if os.path.exists(font_path_macos):
+                font_path = font_path_macos
+            else:
+                # macOS에서 아무 한글폰트나 찾아보기 (없으면 그냥 패스)
                 font_list = fm.findSystemFonts(fontpaths=None, fontext='ttf')
                 for f in font_list:
-                    if 'apple sd gothic neo' in f.lower() or 'nanumgothic' in f.lower() or 'malgun' in f.lower(): # Common Korean fonts
+                    if "Gothic" in f or "Nanum" in f or "AppleSDGothic" in f:
                         font_path = f
                         break
-            except:
-                pass # fm.findSystemFonts might not be available or fail
-    else: # Linux or other
-        if os.path.exists(font_path_linux):
-            font_path = font_path_linux
-    
-    if font_path:
-        try:
+        else:  # Linux or other
+            if os.path.exists(font_path_linux):
+                font_path = font_path_linux
+
+        if font_path:
             font_prop = fm.FontProperties(fname=font_path)
-            plt.rcParams['font.family'] = font_prop.get_name()
-            plt.rcParams['axes.unicode_minus'] = False # To handle minus sign correctly
-        except Exception as e:
-            st.warning(f"선택된 한국어 폰트 ({font_path}) 설정 중 오류 발생: {e}. 기본 폰트로 표시됩니다.")
-    else:
-        st.warning("적절한 한국어 폰트를 찾을 수 없어 그래프의 글자가 깨질 수 있습니다. (NanumGothic, Malgun Gothic, Apple SD Gothic Neo 등 설치 권장)")
+            plt.rcParams["font.family"] = font_prop.get_name()
+            plt.rcParams["axes.unicode_minus"] = False
+        # 폰트를 못 찾으면 그냥 기본 폰트 사용 (아무 메시지도 안 띄움)
+    except Exception:
+        # 폰트 설정 중 에러 나도 조용히 무시
+        pass
+
 
 if st:
     setup_matplotlib_font()  # Setup font once
-    st.set_page_config(page_title="출입국 업무관리", layout="wide")
+    st.set_page_config(
+        page_title="출입국 업무관리",
+        layout="wide",
+        initial_sidebar_state="collapsed",   # ✅ 처음에는 접힌 상태
+    )
 
     # ===== 세션 기본값 설정 (로그인 관련) =====
     if SESS_LOGGED_IN not in st.session_state:
