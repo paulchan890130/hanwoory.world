@@ -33,9 +33,7 @@ def safe_int(val):
 # 1) 일일결산 / 잔액 로드·저장 함수
 # -----------------------------
 
-@st.cache_data(ttl=300)
 def load_daily():
-    """일일결산 시트에서 전체 데이터를 불러와 dict 리스트로 변환."""
     records = read_data_from_sheet(DAILY_SUMMARY_SHEET_NAME, default_if_empty=[])
     processed_records = []
     for r in records:
@@ -83,16 +81,13 @@ def save_daily(data_list_of_dicts):
     )
     if ok:
         # 캐시 및 세션 동기화
-        load_daily.clear()
         if SESS_ALL_DAILY_ENTRIES_PAGE_LOAD in st.session_state:
             st.session_state[SESS_ALL_DAILY_ENTRIES_PAGE_LOAD] = data_list_of_dicts.copy()
         return True
     return False
 
 
-@st.cache_data(ttl=300)
 def load_balance():
-    """잔액 시트에서 cash / profit 값 로드."""
     records = read_data_from_sheet(DAILY_BALANCE_SHEET_NAME, default_if_empty=[])
     balance = {"cash": 0, "profit": 0}
     if not records:
@@ -124,7 +119,6 @@ def save_balance(balance_dict):
         header_list=header,
     )
     if ok:
-        load_balance.clear()
         return True
     return False
 

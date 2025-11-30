@@ -1,0 +1,23 @@
+# 파이썬 기본
+__pycache__/
+*.pyc
+.env
+venv/
+.venv/
+
+# VSCode 설정
+.vscode/
+
+# 구글/OAuth 민감 정보
+hanwoory-*.json
+client_secret*.json
+token.json
+
+# 로컬 데이터/캐시
+*.xlsx
+*.xls
+*.csv
+*.gsheet
+
+# Streamlit 캐시 (있다면)
+.streamlit/

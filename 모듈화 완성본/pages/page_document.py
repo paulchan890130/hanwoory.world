@@ -10,6 +10,8 @@ import fitz  # PyMuPDF
 
 from config import (
     SESS_DF_CUSTOMER,
+    SESS_TENANT_ID,
+    DEFAULT_TENANT_ID,
 )
 
 from core.customer_service import (
@@ -35,8 +37,9 @@ def render():
     # ─────────────────────
     # 1) 고객 데이터 로드
     # ─────────────────────
+    tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
     if SESS_DF_CUSTOMER not in st.session_state:
-        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
+        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet(tenant_id)
     df_cust: pd.DataFrame = st.session_state[SESS_DF_CUSTOMER]
 
     # 문서 생성 상태 플래그

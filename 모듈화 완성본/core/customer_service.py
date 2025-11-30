@@ -4,11 +4,6 @@ import uuid
 import pandas as pd
 import streamlit as st
 
-from config import (
-    CUSTOMER_SHEET_NAME,
-    PARENT_DRIVE_FOLDER_ID,
-    SESS_DF_CUSTOMER,
-)
 from core.google_sheets import (
     get_gspread_client,
     get_drive_service,
@@ -16,9 +11,57 @@ from core.google_sheets import (
 )
 from googleapiclient.errors import HttpError
 
+from config import (
+    CUSTOMER_SHEET_NAME,
+    PARENT_DRIVE_FOLDER_ID,
+    CUSTOMER_PARENT_FOLDER_ID, 
+    SESS_DF_CUSTOMER,
+    ENABLE_CUSTOMER_FOLDERS,
+    SESS_TENANT_ID,
+    DEFAULT_TENANT_ID,
+    SESS_IS_ADMIN,
+)
+
+def is_customer_folder_enabled() -> bool:
+    """
+    현재는 '관리자(한우리)'에게만 고객 폴더 기능을 열어둔다.
+    - 전역 플래그 ENABLE_CUSTOMER_FOLDERS 가 True 여야 하고
+    - 세션에서 관리자 플래그가 True 여야 한다.
+    - (옵션) tenant_id 가 기본테넌트일 때만 허용
+    """
+    if not ENABLE_CUSTOMER_FOLDERS:
+        return False
+
+    import streamlit as st
+    if not st.session_state.get(SESS_IS_ADMIN, False):
+        # 일반 테넌트는 폴더 기능 사용 불가
+        return False
+
+    tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+    if tenant_id != DEFAULT_TENANT_ID:
+        # ✅ 한우리(기본 테넌트)가 아니면 고객폴더 기능 사용 불가
+        return False
+
+    return True
+
+
 # ─────────────────────────────────
 # 공통 헬퍼
 # ─────────────────────────────────
+def get_current_tenant_id():
+    """현재 세션에서 사용하는 테넌트 ID"""
+    return st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+
+def get_customer_sheet_name():
+    """
+    나중에 테넌트별로 다른 고객 시트를 쓰고 싶으면
+    이 함수만 수정하면 된다.
+    지금은 모든 테넌트가 CUSTOMER_SHEET_NAME 하나를 공유.
+    """
+    tenant_id = get_current_tenant_id()
+    # 예) return f"{tenant_id}_고객"  # (미래)
+    return CUSTOMER_SHEET_NAME
+
 def deduplicate_headers(headers):
     seen = {}
     result = []
@@ -50,8 +93,11 @@ def extract_folder_id(val: str) -> str:
 # 드라이브 폴더 생성/연동
 # ─────────────────────────────────
 def create_customer_folders(df_customers: pd.DataFrame, worksheet=None):
+    if not is_customer_folder_enabled():
+        return
+
     drive_svc = get_drive_service()
-    parent_id = PARENT_DRIVE_FOLDER_ID
+    parent_id = CUSTOMER_PARENT_FOLDER_ID
 
     # 1) 부모 폴더의 하위 폴더 목록(name→id) 한 번만 가져오기
     resp = drive_svc.files().list(
@@ -121,29 +167,35 @@ def load_original_customer_df(worksheet):
     rows = data[1:]
     return pd.DataFrame(rows, columns=header)
 
+
 @st.cache_data(ttl=300)
-def load_customer_df_from_sheet():
+def load_customer_df_from_sheet(cache_tenant_id: str) -> pd.DataFrame:
+    """
+    현재 세션의 tenant에 맞는 '고객 데이터' 시트를 읽어서 DataFrame으로 반환.
+
+    ⚠ cache_tenant_id는 실제 로직에는 안 쓰고,
+       캐시 키를 테넌트별로 분리하는 용도로만 쓴다.
+    """
     client = get_gspread_client()
     worksheet = get_worksheet(client, CUSTOMER_SHEET_NAME)
-    all_values = worksheet.get_all_values()
+
+    all_values = worksheet.get_all_values() or []
     if not all_values:
-        return pd.DataFrame().fillna(" ")
+        return pd.DataFrame()
 
-    headers = all_values[0]
-    records = all_values[1:]
-    df = pd.DataFrame(records, columns=headers)
-    df = df.fillna("")
+    header = [str(h) for h in all_values[0]]
+    data_rows = all_values[1:]
 
-    if '폴더' in df.columns:
-        df['folder_url'] = df['폴더'].apply(
-            lambda x: f"https://drive.google.com/drive/folders/{x.strip()}"
-            if x and str(x).strip() not in ("", " ")
-            else ""
-        )
+    if not data_rows:
+        df = pd.DataFrame(columns=header)
     else:
-        df['folder_url'] = ""
+        df = pd.DataFrame(data_rows, columns=header)
+
+    if not df.empty:
+        df = df.astype(str)
 
     return df
+
 
 # ─────────────────────────────────
 # 저장(배치 업데이트)
@@ -237,6 +289,7 @@ def upsert_customer_from_scan(
     extra_info = extra_info or {}
 
     client = get_gspread_client()
+    sheet_name = get_customer_sheet_name()
     ws = get_worksheet(client, CUSTOMER_SHEET_NAME)
 
     rows = ws.get_all_values()
@@ -308,8 +361,10 @@ def upsert_customer_from_scan(
             ws.batch_update(batch)
 
         # 캐시 갱신
+        tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+
         load_customer_df_from_sheet.clear()
-        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
+        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet(tenant_id)
 
         return True, f"기존 고객({df.at[hit_idx, '고객ID']}) 정보가 업데이트되었습니다."
 
@@ -337,7 +392,9 @@ def upsert_customer_from_scan(
     create_customer_folders(pd.DataFrame([base]), ws)
 
     # 캐시 갱신
+    tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+
     load_customer_df_from_sheet.clear()
-    st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
+    st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet(tenant_id)
 
     return True, f"신규 고객이 추가되었습니다 (고객ID: {new_id})."

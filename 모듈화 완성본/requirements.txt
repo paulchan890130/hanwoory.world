@@ -9,3 +9,7 @@ Pillow
 pytesseract
 requests
 pymupdf
+streamlit-calendar
+holidays
+streamlit-aggrid
+

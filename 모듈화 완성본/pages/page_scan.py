@@ -2,6 +2,7 @@
 
 import os
 import re
+import platform
 import datetime
 from datetime import datetime as _dt, timedelta as _td
 
@@ -13,8 +14,17 @@ try:
 except Exception:
     pytesseract = None
 
-TESSERACT_ROOT = r"C:\Program Files\Tesseract-OCR"
-TESSERACT_EXE  = os.path.join(TESSERACT_ROOT, "tesseract.exe")
+# ==== Tesseract 실행 파일 경로 (로컬/서버 겸용) ====
+if platform.system() == "Windows":
+    # 로컬 PC (Windows)에서는 기본 설치 경로 사용
+    TESSERACT_ROOT = r"C:\Program Files\Tesseract-OCR"
+    TESSERACT_EXE  = os.path.join(TESSERACT_ROOT, "tesseract.exe")
+else:
+    # Render 같은 리눅스 서버에서는 PATH 에 있는 tesseract 사용
+    # (예: apt-get install tesseract-ocr 로 설치된 바이너리)
+    TESSERACT_ROOT = ""
+    TESSERACT_EXE  = "tesseract"
+
 
 from config import (
     SESS_CURRENT_PAGE,
@@ -29,32 +39,50 @@ from core.customer_service import (
 # 1) Tesseract 기본 유틸 (간단 버전)
 # -----------------------------
 
-def _ensure_tesseract():
-    """
-    Tesseract 실행파일 & pytesseract 연결 확인용 디버그 버전
+def _ensure_tesseract() -> bool:
+    """Tesseract 실행파일 & pytesseract 연결 확인 (로컬/서버 겸용).
+
+    - Windows: C:\Program Files\Tesseract-OCR\tesseract.exe 사용
+    - Linux/서버(Render 등): PATH 에 있는 `tesseract` 사용
     """
     import streamlit as st
+    import platform
     global pytesseract
 
     # 1) 모듈 체크
     if pytesseract is None:
-        st.error("❌ pytesseract 모듈이 없습니다. 현재 파이썬에 pip install pytesseract가 안 되어 있습니다.")
+        st.error("❌ pytesseract 모듈이 없습니다. `pip install pytesseract` 후 다시 실행해주세요.")
         return False
 
-    # 2) 실행파일 경로 체크
-    if not os.path.exists(TESSERACT_EXE):
-        st.error(f"❌ Tesseract 실행파일을 찾을 수 없습니다.\n기대 경로: {TESSERACT_EXE}")
-        return False
+    system = platform.system()
 
-    # 3) 연결 + 버전 찍어보기
+    # 2) OS별 실행 파일 확인
+    if system == "Windows":
+        if not os.path.exists(TESSERACT_EXE):
+            st.error(
+                "❌ Tesseract 실행파일을 찾을 수 없습니다.\n"
+                f"기대 경로: {TESSERACT_EXE}"
+            )
+            return False
+        cmd = TESSERACT_EXE
+    else:
+        # 리눅스/맥: PATH 에 있는 tesseract 사용
+        cmd = TESSERACT_EXE  # 보통 'tesseract'
+
+    # 3) 연결 + 버전 확인
     try:
-        pytesseract.pytesseract.tesseract_cmd = TESSERACT_EXE
+        pytesseract.pytesseract.tesseract_cmd = cmd
         ver = pytesseract.get_tesseract_version()
-        st.info(f"✅ Tesseract 연결 성공: {ver}")
+        st.info(f"✅ Tesseract 연결 성공: {ver} (cmd={cmd})")
         return True
     except Exception as e:
-        st.error(f"❌ Tesseract 실행 중 오류: {e}")
+        if system == "Windows":
+            more = "Tesseract-OCR 설치 및 환경변수를 다시 확인해주세요."
+        else:
+            more = "Render 서버에 `tesseract-ocr` 패키지가 설치되어 있는지 확인해주세요."
+        st.error(f"❌ Tesseract 실행 중 오류: {e}\n{more}")
         return False
+
 
 
 def _ocr(img, lang="kor", config=""):

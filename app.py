@@ -1,5 +1,5 @@
 # ===== Imports (정리본) =====
-import os, platform, io, json, uuid, calendar
+import os, platform, io, json, uuid, calendar, pytesseract
 import datetime
 import streamlit as st
 import requests
@@ -118,10 +118,14 @@ from core.customer_service import (
 )
 
 # ==== OCR ====  (위 import 근처에 미리 추가)
+if platform.system() == "Windows":
+    TESSERACT_ROOT = r"C:\Program Files\Tesseract-OCR"
+    TESSERACT_EXE  = os.path.join(TESSERACT_ROOT, "tesseract.exe")
+    TESSDATA_DIR   = os.path.join(TESSERACT_ROOT, "tessdata")  # 참고용
+else:
+    # Linux(Docker)에서는 패키지로 설치된 tesseract 사용
+    pytesseract.pytesseract.tesseract_cmd = "tesseract"
 
-TESSERACT_ROOT = r"C:\Program Files\Tesseract-OCR"
-TESSERACT_EXE  = os.path.join(TESSERACT_ROOT, "tesseract.exe")
-TESSDATA_DIR   = os.path.join(TESSERACT_ROOT, "tessdata")  # 참고용
 
 def _ensure_tesseract():
     """

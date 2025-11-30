@@ -14,7 +14,8 @@ from config import (
     SESS_CUSTOMER_SEARCH_MASK_INDICES,
     SESS_CUSTOMER_AWAITING_DELETE_CONFIRM,
     SESS_CUSTOMER_DELETED_ROWS_STACK,
-
+    SESS_TENANT_ID,
+    DEFAULT_TENANT_ID,
     # 페이지 키
     PAGE_SCAN,
 
@@ -34,6 +35,7 @@ from core.customer_service import (
     save_customer_batch_update,
     create_customer_folders,
     extract_folder_id,
+    is_customer_folder_enabled,
 )
 
 
@@ -53,8 +55,19 @@ def render():
     st.subheader("👥 고객관리")
 
     # --- 1) 원본 DataFrame 로드 ---
+    # --- 1) 원본 DataFrame 로드 ---
     df_customer_main = st.session_state[SESS_DF_CUSTOMER].copy()
     df_customer_main = df_customer_main.sort_values("고객ID", ascending=False).reset_index(drop=True)
+
+    # --- 1-1) 폴더 ID → URL 변환 (어드민 전용 폴더 기능용) ---
+    if "폴더" in df_customer_main.columns:
+        from core.customer_service import extract_folder_id
+        def _to_folder_url(val: str) -> str:
+            fid = extract_folder_id(val)
+            return f"https://drive.google.com/drive/folders/{fid}" if fid else ""
+        df_customer_main["folder_url"] = df_customer_main["폴더"].apply(_to_folder_url)
+    else:
+        df_customer_main["folder_url"] = ""
 
     # --- 2) 컬럼 제한 ---
     cols_to_display = [
@@ -62,24 +75,33 @@ def render():
         '등록증', '번호', '발급일', 'V', '만기일',
         '여권', '발급', '만기', '주소', '위임내역', '비고', '폴더'
     ]
+    if not is_customer_folder_enabled():
+        cols_to_display = [c for c in cols_to_display if c != "폴더"]
+
     cols_to_display = [c for c in cols_to_display if c in df_customer_main.columns]
     df_for_ui = df_customer_main.loc[:, cols_to_display].copy()
 
     # folder_url 준비
-    if "folder_url" not in df_customer_main.columns:
-        df_customer_main["folder_url"] = ""
-    df_for_ui = df_for_ui.copy()
-    df_for_ui["폴더"] = df_customer_main["folder_url"]
+    if is_customer_folder_enabled():
+        # folder_url 준비
+        if "folder_url" not in df_customer_main.columns:
+            df_customer_main["folder_url"] = ""
+        df_for_ui = df_for_ui.copy()
+        if "폴더" in df_for_ui.columns:
+            df_for_ui["폴더"] = df_customer_main["folder_url"]
 
-    # “폴더 생성” 버튼
-    if st.button("📂 폴더 일괄 생성/연동", use_container_width=True):
-        st.info("폴더 생성 중…")
-        client = get_gspread_client()
-        worksheet = get_worksheet(client, CUSTOMER_SHEET_NAME)
-        create_customer_folders(df_customer_main, worksheet)
-        load_customer_df_from_sheet.clear()
-        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
-        st.success("✅ 폴더 매핑이 최신화 되었습니다.")
+        # “폴더 생성” 버튼
+        if st.button("📂 폴더 일괄 생성/연동", use_container_width=True):
+            st.info("폴더 생성 중…")
+            client = get_gspread_client()
+            worksheet = get_worksheet(client, CUSTOMER_SHEET_NAME)
+            create_customer_folders(df_customer_main, worksheet)
+            load_customer_df_from_sheet.clear()
+            st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
+            st.success("✅ 폴더 매핑이 최신화 되었습니다.")
+    else:
+        # 필요하면 안내 문구 정도만
+        st.caption("📂 고객별 폴더 기능은 현재 비활성화된 상태입니다.")
 
     # --- 3) 툴바 ---
     col_add, col_scan, col_search, col_select, col_delete, col_save, col_undo = st.columns([1, 1, 1.5, 1, 1, 1, 1])
@@ -134,11 +156,13 @@ def render():
         .reset_index(drop=True)
         .copy()
     )
-    df_display_for_editor["폴더"] = (
-        df_customer_main.loc[mask_indices, "folder_url"]
-        .reset_index(drop=True)
-        .fillna("")
-    )
+
+    if is_customer_folder_enabled():
+        df_display_for_editor["폴더"] = (
+            df_customer_main.loc[mask_indices, "folder_url"]
+            .reset_index(drop=True)
+            .fillna("")
+        )
 
     # 9) 삭제 확인
     if st.session_state.get(SESS_CUSTOMER_AWAITING_DELETE_CONFIRM, False):
@@ -182,31 +206,34 @@ def render():
                     i = idx_list[0]
 
                     # 2) 폴더 ID 안전 추출 (폴더 컬럼이 비어있으면 folder_url에서 보조 추출)
-                    folder_raw = full_df.at[i, "폴더"] if "폴더" in full_df.columns else ""
-                    if (not str(folder_raw).strip()) and ("folder_url" in full_df.columns):
-                        folder_raw = full_df.at[i, "folder_url"]
-                    folder_id = extract_folder_id(folder_raw)
+                    folder_id = ""
+                    if is_customer_folder_enabled():
+                        # 폴더 기능이 켜져 있을 때만 Drive 연동 처리
+                        folder_raw = full_df.at[i, "폴더"] if "폴더" in full_df.columns else ""
+                        if (not str(folder_raw).strip()) and ("folder_url" in full_df.columns):
+                            folder_raw = full_df.at[i, "folder_url"]
+                        folder_id = extract_folder_id(folder_raw)
 
-                    # 3) Drive 폴더 삭제(권한 이슈 시 휴지통으로 이동 폴백)
-                    if folder_id:
-                        try:
-                            drive_svc.files().delete(fileId=folder_id, supportsAllDrives=True).execute()
-                        except HttpError as e:
-                            code = getattr(e, "resp", None).status if hasattr(e, "resp") else None
-                            if code == 404:
-                                st.info(f"폴더(ID={folder_id})는 이미 삭제되었습니다.")
-                            elif code == 403:
-                                try:
-                                    drive_svc.files().update(
-                                        fileId=folder_id,
-                                        body={"trashed": True},
-                                        supportsAllDrives=True
-                                    ).execute()
-                                    st.info(f"폴더(ID={folder_id})를 휴지통으로 이동했습니다.")
-                                except HttpError as e2:
-                                    st.warning(f"폴더 삭제/휴지통 이동 실패(ID={folder_id}): {e2}")
-                            else:
-                                st.warning(f"폴더 삭제 중 오류(ID={folder_id}): {e}")
+                        # 3) Drive 폴더 삭제(권한 이슈 시 휴지통으로 이동 폴백)
+                        if folder_id:
+                            try:
+                                drive_svc.files().delete(fileId=folder_id, supportsAllDrives=True).execute()
+                            except HttpError as e:
+                                code = getattr(e, "resp", None).status if hasattr(e, "resp") else None
+                                if code == 404:
+                                    st.info(f"폴더(ID={folder_id})는 이미 삭제되었습니다.")
+                                elif code == 403:
+                                    try:
+                                        drive_svc.files().update(
+                                            fileId=folder_id,
+                                            body={"trashed": True},
+                                            supportsAllDrives=True
+                                        ).execute()
+                                        st.info(f"폴더(ID={folder_id})를 휴지통으로 이동했습니다.")
+                                    except HttpError as e2:
+                                        st.warning(f"폴더 삭제/휴지통 이동 실패(ID={folder_id}): {e2}")
+                                else:
+                                    st.warning(f"폴더 삭제 중 오류(ID={folder_id}): {e}")
 
                     # 4) 시트 행 삭제(정확한 행 번호)
                     sheet_row = id_to_sheetrow.get(str(del_id).strip())
@@ -307,8 +334,10 @@ def render():
             client = get_gspread_client()
             worksheet = get_worksheet(client, CUSTOMER_SHEET_NAME)
 
+            tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+
             # 1) 시트에 없던 신규 행만 append
-            original = load_customer_df_from_sheet()
+            original = load_customer_df_from_sheet(tenant_id)
             orig_ids = set(original["고객ID"].astype(str))
             new_rows = []
             for _, row in edited_df_display.iterrows():
@@ -316,16 +345,19 @@ def render():
                 if cid not in orig_ids:
                     new_rows.append({h: row.get(h, "") for h in original.columns})
 
-            if new_rows and append_rows_to_sheet(CUSTOMER_SHEET_NAME, new_rows, list(original.columns)):
+            if len(new_rows) > 0 and len(new_rows) <= 1000 and set(new_rows[0].keys()) == set(original.columns):
                 st.success(f"✅ 신규 {len(new_rows)}건이 추가되었습니다.")
 
-                # 2) fresh_df로 폴더 생성/연동
+                # 공통: DF는 새로 다시 읽어와서 세션에 반영
                 load_customer_df_from_sheet.clear()
                 fresh_df = load_customer_df_from_sheet()
-                st.info("📂 신규 고객 폴더 생성 중…")
-                create_customer_folders(fresh_df, worksheet)
-                st.success("✅ 신규 고객 폴더가 생성/연동되었습니다.")
                 st.session_state[SESS_DF_CUSTOMER] = fresh_df
+
+                # 👉 폴더 기능이 켜져 있을 때만 실제 폴더 생성 + 메시지 출력
+                if is_customer_folder_enabled():
+                    st.info("📂 신규 고객 폴더 생성 중…")
+                    create_customer_folders(fresh_df, worksheet)
+                    st.success("✅ 신규 고객 폴더가 생성/연동되었습니다.")
 
             # 3) 기존 행 변경사항 batch update
             ok = save_customer_batch_update(edited_df_display, worksheet)
@@ -334,6 +366,6 @@ def render():
 
             # 4) 최종 리프레시
             load_customer_df_from_sheet.clear()
-            st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
+            st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet(tenant_id)
             st.session_state[SESS_CUSTOMER_DATA_EDITOR_KEY] += 1
             st.rerun()

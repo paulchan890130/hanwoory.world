@@ -2,12 +2,45 @@
 import os
 import platform
 
+# 로컬 / 서버 모드 구분
+RAW_RUN_ENV = os.getenv("HANWOORY_ENV", "local")
+RUN_ENV = (RAW_RUN_ENV or "local").strip().lower()
+TENANT_MODE = (RUN_ENV == "server")
+
+
+if platform.system() == "Windows":
+    # 로컬에서 쓰는 경로
+    OAUTH_CLIENT_SECRET_PATH = r"C:\Users\윤찬\K.ID 출입국업무관리\client_secret_desktop.json"
+    OAUTH_TOKEN_PATH = r"C:\Users\윤찬\K.ID 출입국업무관리\token.json"
+else:
+    # Render 같은 리눅스 서버에서 쓸 경로 (Secret Files로 맞춰줄 예정)
+    OAUTH_CLIENT_SECRET_PATH = "/etc/secrets/client_secret_desktop.json"
+    OAUTH_TOKEN_PATH = "/etc/secrets/token.json"
+
 # ===== 드라이브/도장 등 경로 상수 =====
-PARENT_DRIVE_FOLDER_ID = "1vAT3OvELPhosJ99Zg1fJ5hKJEgx7kNlW"
+PARENT_DRIVE_FOLDER_ID = "1OX5tH9MOYz9leeYJ_KIrBHWBZxMXjb16"
+CUSTOMER_PARENT_FOLDER_ID = "1vAT3OvELPhosJ99Zg1fJ5hKJEgx7kNlW"  # ✅ 고객폴더 전용 부모 폴더
 
 circle_path = "templates/원형 배경.png"
 font_path   = "Fonts/HJ한전서B.ttf"
 seal_size   = 200
+
+# ===== 고객 폴더 기능 옵션 =====
+# 기본값: 폴더 기능 비활성화 (Admin이 True로 바꿔서 사용)
+ENABLE_CUSTOMER_FOLDERS = True
+
+# ===== 테넌트 / 로그인 기본 설정 =====
+# 지금은 단일 사무소만 쓰지만, 나중에 멀티테넌트 확장할 때 쓸 플래그
+SESS_LOGGED_IN = "logged_in"
+SESS_USERNAME = "username"
+
+DEFAULT_TENANT_ID = "hanwoory"
+SESS_TENANT_ID = "sess_tenant_id"
+
+SESS_LOGGED_IN = "logged_in"
+SESS_USERNAME = "username"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ===== 구글 서비스 계정 키 경로 =====
 if platform.system() == "Windows":
@@ -15,8 +48,25 @@ if platform.system() == "Windows":
 else:
     KEY_PATH = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "/etc/secrets/hanwoory-9eaa1a4c54d7.json")
 
-# ===== 메인 스프레드시트 키 =====
-SHEET_KEY = "14pEPo-Q3aFgbS1Gqcamb2lkadq-eFlOrQ-wST3EU1pk"
+# ===== 업무정리 / 고객데이터 템플릿 =====
+WORK_REFERENCE_TEMPLATE_ID = "1KxZY_VGUfGjo8nWn1d01OVN007uTpbLSnNLX3Jf62nE"
+SHEET_KEY = "1W7myK9dOQQnN3BAVLzFR_kjV91LSmKzO_9v7lWS0bI8"
+
+# ===== 테넌트용 템플릿 스프레드시트 ID =====
+# 새 사무실 생성 시, 아래 두 파일을 복사해서 사용한다.
+CUSTOMER_DATA_TEMPLATE_ID  = "1UhMUpSJif54NqJXapQBe7DxyvbCil3RNiQDPhUgjNec"
+WORK_REFERENCE_TEMPLATE_ID = "1p7Xt9x8TxVwQHzfiyTmCppvYSOuLHMTJmwdCErZ8KX4"
+
+# --- 계정/테넌트 관련 ---
+ACCOUNTS_SHEET_NAME = "Accounts"
+
+# TENANT_MODE = False   # 기본: 단일 테넌트
+DEFAULT_TENANT_ID = "hanwoory"
+
+SESS_TENANT_ID  = "sess_tenant_id"
+SESS_LOGGED_IN  = "sess_logged_in"
+SESS_USERNAME   = "sess_username"
+SESS_IS_ADMIN   = "sess_is_admin"
 
 # ===== Sheet Tab Names =====
 CUSTOMER_SHEET_NAME        = "고객 데이터"
@@ -64,6 +114,8 @@ PAGE_MANUAL = 'manual'
 PAGE_DOCUMENT = 'document'
 PAGE_COMPLETED = 'completed'
 PAGE_SCAN = 'scan'
+PAGE_ADMIN_ACCOUNTS = 'admin_accounts'
+
 
 # ===== 공용 헬퍼 =====
 def safe_int(val):

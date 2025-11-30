@@ -5,6 +5,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import gspread
+import hashlib, os, base64, hmac
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -20,12 +21,14 @@ from pages.page_customer import render as render_customer_page
 from pages.page_home import render as render_home_page
 from pages.page_daily import render as render_daily_page
 from pages.page_monthly import render as render_monthly_page
-from pages.page_manual import render as render_manual_page
+# from pages.page_manual import render as render_manual_page
 from pages.page_memo import render as render_memo_page
 from pages.page_reference import render as render_reference_page
 from pages.page_document import render as render_document_page
 from pages import page_scan
 from pages import page_completed
+
+from config import RUN_ENV, TENANT_MODE
 
 # ==== OCR ====
 try:
@@ -51,6 +54,12 @@ from config import (
     PARENT_DRIVE_FOLDER_ID,
 
     # ===== 세션 키 =====
+    SESS_LOGGED_IN,
+    SESS_USERNAME,
+    SESS_TENANT_ID,
+    DEFAULT_TENANT_ID,
+    ACCOUNTS_SHEET_NAME,
+    SESS_IS_ADMIN,          # 🔹 추가
     SESS_CURRENT_PAGE,
     SESS_DF_CUSTOMER,
     SESS_CUSTOMER_SEARCH_TERM,
@@ -84,6 +93,7 @@ from config import (
     PAGE_DOCUMENT,
     PAGE_COMPLETED,
     PAGE_SCAN,
+    PAGE_ADMIN_ACCOUNTS,    # 🔹 추가
 
     # ===== 공용 함수 =====
     safe_int,
@@ -271,6 +281,126 @@ def update_changes_to_sheet(worksheet, original_df, edited_df):
 # -----------------------------
 # ✅ Application Specific Data Load/Save Functions
 # -----------------------------
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100_000)
+    return base64.b64encode(salt + dk).decode("ascii")
+
+def verify_password(password: str, hashed: str) -> bool:
+    try:
+        raw = base64.b64decode(hashed.encode("ascii"))
+        salt, dk = raw[:16], raw[16:]
+        new_dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100_000)
+        return hmac.compare_digest(dk, new_dk)
+    except Exception:
+        return False
+
+
+def create_office_account_via_signup(
+    login_id: str,
+    raw_pw: str,
+    office_name: str,
+    contact_name: str = "",
+    contact_tel: str = "",
+):
+    """
+    일반 사무실에서 회원가입 탭을 통해 계정 신청할 때 호출.
+    - Accounts 시트에 한 줄 추가
+    - 기본값:
+        is_admin  = FALSE  (전역 관리자 아님)
+        is_active = FALSE  (관리자 승인 전까지 로그인 불가)
+    """
+    login_id = (login_id or "").strip()
+    office_name = (office_name or "").strip()
+
+    if not login_id:
+        raise ValueError("로그인 ID가 비어 있습니다.")
+    if not raw_pw:
+        raise ValueError("비밀번호가 비어 있습니다.")
+    if not office_name:
+        raise ValueError("사무실 이름이 비어 있습니다.")
+
+    # 1) 기존 계정 목록 읽기
+    records = read_data_from_sheet(ACCOUNTS_SHEET_NAME, default_if_empty=[]) or []
+
+    # 2) login_id 중복 체크
+    for r in records:
+        if str(r.get("login_id", "")).strip() == login_id:
+            # ✅ 폴찬이 원하는 문구
+            raise ValueError("동일한 ID가 존재합니다. 다른 ID로 가입신청해 주십시오.")
+        
+    # 3) header_list 결정 (기존 시트가 있으면 그 구조를 따라감)
+    if records:
+        header_list = list(records[0].keys())
+    else:
+        # 시트가 비어 있는 경우: 기본 헤더 정의
+        header_list = [
+            "login_id",
+            "password_hash",
+            "tenant_id",
+            "office_name",
+            "contact_name",
+            "contact_tel",
+            "is_admin",
+            "is_active",
+            "folder_id",
+            "work_sheet_key",
+            "customer_sheet_key",
+            "created_at",
+        ]
+
+    # 4) 기본값 딕셔너리 만들고 필요한 값 채우기
+    new_rec = {h: "" for h in header_list}
+
+    new_rec["login_id"] = login_id
+    new_rec["password_hash"] = hash_password(raw_pw)
+    # 우선은 tenant_id = login_id (나중에 slug 처리 등 가능)
+    if "tenant_id" in new_rec:
+        new_rec["tenant_id"] = login_id
+    if "office_name" in new_rec:
+        new_rec["office_name"] = office_name
+    if "contact_name" in new_rec:
+        new_rec["contact_name"] = contact_name
+    if "contact_tel" in new_rec:
+        new_rec["contact_tel"] = contact_tel
+
+    if "is_admin" in new_rec:
+        new_rec["is_admin"] = "FALSE"
+    if "is_active" in new_rec:
+        new_rec["is_active"] = "FALSE"
+
+    if "folder_id" in new_rec:
+        new_rec["folder_id"] = ""
+    if "work_sheet_key" in new_rec:
+        new_rec["work_sheet_key"] = ""
+    if "customer_sheet_key" in new_rec:
+        new_rec["customer_sheet_key"] = ""
+
+    if "created_at" in new_rec:
+        new_rec["created_at"] = datetime.date.today().isoformat()
+
+    ok = append_rows_to_sheet(
+        ACCOUNTS_SHEET_NAME,
+        [new_rec],           # dict 1개를 리스트로 감싸서 전달
+        header_list=header_list,
+    )
+    if not ok:
+        raise RuntimeError("Accounts 시트에 신규 계정을 추가하지 못했습니다.")
+
+    # Accounts가 바뀌었으니, 테넌트 sheet_key 캐시를 초기화
+    try:
+        from core.google_sheets import _load_tenant_sheet_keys
+        _load_tenant_sheet_keys.clear()
+    except Exception:
+        st.cache_data.clear()
+
+
+def find_account(login_id: str):
+    records = read_data_from_sheet(ACCOUNTS_SHEET_NAME, default_if_empty=[])
+    for r in records:
+        if str(r.get("login_id", "")).strip() == login_id.strip():
+            return r
+    return None
 
 # --- Event (Calendar) Data Functions ---
 @st.cache_data(ttl=300) 
@@ -464,90 +594,236 @@ def save_completed_tasks_to_sheet(records): # Renamed
 # --- Font Setup for Matplotlib ---
 def setup_matplotlib_font():
     font_path_linux = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
-    font_path_windows = "C:/Windows/Fonts/malgun.ttf" # Malgun Gothic for Windows
-    font_path_macos = "/System/Library/Fonts/AppleSDGothicNeo.ttc" # Apple SD Gothic Neo for macOS
+    font_path_windows = "C:/Windows/Fonts/malgun.ttf"  # Malgun Gothic for Windows
+    font_path_macos = "/System/Library/Fonts/AppleSDGothicNeo.ttc"  # Apple SD Gothic Neo for macOS
 
     font_path = None
-    if platform.system() == "Windows":
-        if os.path.exists(font_path_windows):
-            font_path = font_path_windows
-    elif platform.system() == "Darwin": # macOS
-        if os.path.exists(font_path_macos): # Check for specific font file if known, or a common one
-            font_path = font_path_macos
-        else: # Fallback for macOS if specific font not found, try to find any Korean font
-            try:
+    try:
+        if platform.system() == "Windows":
+            if os.path.exists(font_path_windows):
+                font_path = font_path_windows
+        elif platform.system() == "Darwin":  # macOS
+            if os.path.exists(font_path_macos):
+                font_path = font_path_macos
+            else:
+                # macOS에서 아무 한글폰트나 찾아보기 (없으면 그냥 패스)
                 font_list = fm.findSystemFonts(fontpaths=None, fontext='ttf')
                 for f in font_list:
-                    if 'apple sd gothic neo' in f.lower() or 'nanumgothic' in f.lower() or 'malgun' in f.lower(): # Common Korean fonts
+                    if "Gothic" in f or "Nanum" in f or "AppleSDGothic" in f:
                         font_path = f
                         break
-            except:
-                pass # fm.findSystemFonts might not be available or fail
-    else: # Linux or other
-        if os.path.exists(font_path_linux):
-            font_path = font_path_linux
-    
-    if font_path:
-        try:
+        else:  # Linux or other
+            if os.path.exists(font_path_linux):
+                font_path = font_path_linux
+
+        if font_path:
             font_prop = fm.FontProperties(fname=font_path)
-            plt.rcParams['font.family'] = font_prop.get_name()
-            plt.rcParams['axes.unicode_minus'] = False # To handle minus sign correctly
-        except Exception as e:
-            st.warning(f"선택된 한국어 폰트 ({font_path}) 설정 중 오류 발생: {e}. 기본 폰트로 표시됩니다.")
-    else:
-        st.warning("적절한 한국어 폰트를 찾을 수 없어 그래프의 글자가 깨질 수 있습니다. (NanumGothic, Malgun Gothic, Apple SD Gothic Neo 등 설치 권장)")
+            plt.rcParams["font.family"] = font_prop.get_name()
+            plt.rcParams["axes.unicode_minus"] = False
+        # 폰트를 못 찾으면 그냥 기본 폰트 사용 (아무 메시지도 안 띄움)
+    except Exception:
+        # 폰트 설정 중 에러 나도 조용히 무시
+        pass
+
 
 if st:
-    setup_matplotlib_font() # Setup font once
+    setup_matplotlib_font()  # Setup font once
+    st.set_page_config(
+        page_title="출입국 업무관리",
+        layout="wide",
+        initial_sidebar_state="collapsed",   # ✅ 처음에는 접힌 상태
+    )
 
-if st: 
-    st.set_page_config(page_title="출입국 업무관리", layout="wide")
+    # ===== 세션 기본값 설정 (로그인 관련) =====
+    if SESS_LOGGED_IN not in st.session_state:
+        st.session_state[SESS_LOGGED_IN] = False
 
-    # Initialize current_page in session state if not present
+    if SESS_USERNAME not in st.session_state:
+        st.session_state[SESS_USERNAME] = ""
+
+    if SESS_TENANT_ID not in st.session_state:
+        st.session_state[SESS_TENANT_ID] = DEFAULT_TENANT_ID
+
+    if SESS_IS_ADMIN not in st.session_state:
+        st.session_state[SESS_IS_ADMIN] = False
+
     if SESS_CURRENT_PAGE not in st.session_state:
         st.session_state[SESS_CURRENT_PAGE] = PAGE_HOME
 
-    # Initialize other session states if needed
+    # ===== 로그인 / 회원가입 화면 =====
+    if not st.session_state[SESS_LOGGED_IN]:
+        st.title("🔐 K.ID 출입국 업무관리")
+
+        if "signup_message" in st.session_state:
+            st.success(st.session_state["signup_message"])
+            del st.session_state["signup_message"]
+
+        tab_login, tab_signup = st.tabs(["로그인", "사무실 회원가입"])
+
+        # ---------- 탭 1: 로그인 ----------
+        with tab_login:
+            st.subheader("로그인")
+
+            with st.form("login_form"):
+                username = st.text_input("ID")
+                password = st.text_input("비밀번호", type="password")
+                submitted = st.form_submit_button("로그인")
+
+            if submitted:
+                acc = find_account(username)
+
+                if not acc:
+                    st.error("계정이 존재하지 않습니다.")
+                else:
+                    is_active = str(acc.get("is_active", "")).strip().lower() in ("true", "1", "y")
+                    if not is_active:
+                        st.error("비활성화된 계정입니다. (관리자 승인 전이거나 사용 중지된 계정)")
+                    else:
+                        hashed = str(acc.get("password_hash", "")).strip()
+                        if not hashed or not verify_password(password, hashed):
+                            st.error("ID 또는 비밀번호가 올바르지 않습니다.")
+                        else:
+                            is_admin_flag = str(acc.get("is_admin", "")).strip().lower() in ("true", "1", "y")
+                            tenant_id = acc.get("tenant_id") or DEFAULT_TENANT_ID
+
+                            st.session_state[SESS_LOGGED_IN] = True
+                            st.session_state[SESS_USERNAME]  = username
+                            st.session_state[SESS_TENANT_ID] = tenant_id
+                            st.session_state[SESS_IS_ADMIN]  = is_admin_flag
+                            st.rerun()
+
+        # ---------- 탭 2: 사무실 회원가입 ----------
+        with tab_signup:
+            st.subheader("사무실 회원가입")
+
+            st.markdown(
+                "- 이 화면은 **새로운 행정사 사무소**가 K.ID 업무관리 시스템을 사용하기 위해 계정을 신청하는 용도입니다.<br>"
+                "- 가입 후에는 관리자가 승인을 해야 로그인 가능합니다.",
+                unsafe_allow_html=True,
+            )
+
+            with st.form("signup_form"):
+                office_name  = st.text_input("사무실 이름 *")
+                login_id_new = st.text_input("로그인 ID (영문/숫자 권장) *")
+                contact_name = st.text_input("담당자 이름", value="")
+                contact_tel  = st.text_input("연락처 (전화번호 등)", value="")
+                pw1 = st.text_input("비밀번호 *", type="password")
+                pw2 = st.text_input("비밀번호 확인 *", type="password")
+
+                submitted_signup = st.form_submit_button("회원가입 요청")
+
+            if submitted_signup:
+                errors = []
+                if not office_name.strip():
+                    errors.append("사무실 이름을 입력해주세요.")
+                if not login_id_new.strip():
+                    errors.append("로그인 ID를 입력해주세요.")
+                if not pw1:
+                    errors.append("비밀번호를 입력해주세요.")
+                if pw1 != pw2:
+                    errors.append("비밀번호 확인이 일치하지 않습니다.")
+
+                if errors:
+                    for e in errors:
+                        st.error(e)
+                else:
+                    try:
+                        create_office_account_via_signup(
+                            login_id=login_id_new,
+                            raw_pw=pw1,
+                            office_name=office_name,
+                            contact_name=contact_name,
+                            contact_tel=contact_tel,
+                        )
+                        st.session_state["signup_message"] = (
+                            "가입신청이 완료되었습니다. 본 프로그램은 정식 영업중인 행정사를 위한 프로그램으로 "
+                            "사업자등록증, 행정사업무신고확인증, 사업장 사진(3장 이상)을 "
+                            "chan@hanwoory.world 로 보내주시면 확인 후 승인해 드리겠습니다."
+                        )
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
+                    except Exception as e:
+                        st.error(f"회원가입 중 오류가 발생했습니다: {e}")
+
+        # 로그인/회원가입 화면에서는 여기서 종료
+        st.stop()
+
+    # ===== 여기부터는 '로그인된 상태'에서만 실행 =====
+    tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+
+    # 테넌트별 데이터 로딩 (고객 / 예정 / 진행)
     if SESS_DF_CUSTOMER not in st.session_state:
-        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet()
-    
+        st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet(tenant_id)
+
     if SESS_PLANNED_TASKS_TEMP not in st.session_state:
-        st.session_state[SESS_PLANNED_TASKS_TEMP] = load_planned_tasks_from_sheet() # Load initial data into temp
+        st.session_state[SESS_PLANNED_TASKS_TEMP] = load_planned_tasks_from_sheet()
 
     if SESS_ACTIVE_TASKS_TEMP not in st.session_state:
-        st.session_state[SESS_ACTIVE_TASKS_TEMP] = load_active_tasks_from_sheet() # Load initial data into temp
+        st.session_state[SESS_ACTIVE_TASKS_TEMP] = load_active_tasks_from_sheet()
 
+    # 사이드바 / 로그아웃
+    with st.sidebar:
+        st.caption(f"👤 {st.session_state.get(SESS_USERNAME, '')}")
+        if st.button("로그아웃"):
+            for key in [
+                SESS_LOGGED_IN,
+                SESS_USERNAME,
+                SESS_TENANT_ID,
+                SESS_IS_ADMIN,
+                SESS_DF_CUSTOMER,
+                SESS_PLANNED_TASKS_TEMP,
+                SESS_ACTIVE_TASKS_TEMP,
+            ]:
+                st.session_state.pop(key, None)
+            st.rerun()
+
+    # 공통 스타일 + 디버그 캡션
     st.markdown("""
     <style>
       [data-testid="stVerticalBlock"] > div { margin-bottom: 0px !important; }
       [data-testid="stColumns"] { margin-bottom: 0px !important; }
-      /* Attempt to style placeholder text for Korean IME issue - often not effective */
-      /* input::placeholder, textarea::placeholder { opacity: 0.7; } */
-      /* Forcing font for inputs - might not solve IME composition issue */
-      /* input[type="text"], textarea { font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'NanumGothic', sans-serif !important; } */
     </style>
     """, unsafe_allow_html=True)
 
-    title_col, toolbar_col = st.columns([2, 3]) 
+    st.sidebar.caption(
+        f"ENV={RUN_ENV}, TENANT_MODE={TENANT_MODE}, "
+        f"tenant={st.session_state.get(SESS_TENANT_ID, '-')}"
+    )
+
+    title_col, toolbar_col = st.columns([2, 3])
     with title_col:
         st.title("📋 출입국 업무관리")
-        
+
     with toolbar_col:
         toolbar_options = {
             "🏠 홈으로": PAGE_HOME,
             "🗒 메모장": PAGE_MEMO,
             "📚 업무": PAGE_REFERENCE,
             "👥 고객관리": PAGE_CUSTOMER,
-            "📊 결산": PAGE_DAILY, # 일일결산
-            "🧭 메뉴얼 검색": PAGE_MANUAL
+            "📊 결산": PAGE_DAILY,
+            "🧭 메뉴얼 검색": PAGE_MANUAL,
         }
+
+        if st.session_state.get(SESS_IS_ADMIN, False):
+            toolbar_options["🧩 계정관리"] = PAGE_ADMIN_ACCOUNTS
+
         num_buttons = len(toolbar_options)
-        btn_cols = st.columns(num_buttons)  
+        btn_cols = st.columns(num_buttons)
         for idx, (label, page_key) in enumerate(toolbar_options.items()):
-            if btn_cols[idx].button(label, key=f"nav-{page_key}-{idx}", use_container_width=True):
-                st.session_state[SESS_CURRENT_PAGE] = page_key
-                st.rerun()
-                
+            col = btn_cols[idx]
+
+            if page_key == PAGE_MANUAL:
+                col.link_button(
+                    label,
+                    "https://www.hikorea.go.kr/board/BoardNtcDetailR.pt?BBS_SEQ=1&BBS_GB_CD=BS10&NTCCTT_SEQ=1062&page=1",
+                    use_container_width=True,
+                )
+            else:
+                if col.button(label, key=f"nav-{page_key}-{idx}", use_container_width=True):
+                    st.session_state[SESS_CURRENT_PAGE] = page_key
+                    st.rerun()
+
     st.markdown("---") 
 
     current_page_to_display = st.session_state[SESS_CURRENT_PAGE]
@@ -581,8 +857,8 @@ if st:
     # -----------------------------
     # ✅ Manual Search Page
     # -----------------------------
-    elif current_page_to_display == PAGE_MANUAL:
-        render_manual_page()
+    # elif current_page_to_display == PAGE_MANUAL:
+    #    render_manual_page()
 
     # -----------------------------
     # ✅ Memo Page
@@ -607,6 +883,13 @@ if st:
     # -----------------------------
     elif current_page_to_display == PAGE_COMPLETED:
         page_completed.render()
+
+    # -----------------------------
+    # ✅ admin page
+    # -----------------------------
+    elif current_page_to_display == PAGE_ADMIN_ACCOUNTS:
+        from pages import page_admin_accounts
+        page_admin_accounts.render()
 
     # -----------------------------
     # ✅ Home Page (Main Dashboard)

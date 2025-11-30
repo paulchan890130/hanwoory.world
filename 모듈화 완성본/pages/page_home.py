@@ -2,52 +2,387 @@
 
 import datetime
 import uuid
+import calendar as pycal
 
 import pandas as pd
 import streamlit as st
+from streamlit_calendar import calendar as st_calendar  # 👈 추가
 
 from config import (
     # 세션 상태 키
     SESS_DF_CUSTOMER,
+    SESS_TENANT_ID,
+    DEFAULT_TENANT_ID,
     SESS_PLANNED_TASKS_TEMP,
     SESS_ACTIVE_TASKS_TEMP,
+    SESS_EVENTS_DATA_HOME,          
+    SESS_HOME_SELECTED_YEAR,        
+    SESS_HOME_SELECTED_MONTH,       
+    SESS_HOME_CALENDAR_SELECTED_DATE,  
     # 시트 이름
     MEMO_SHORT_SHEET_NAME,
+    EVENTS_SHEET_NAME,              
 )
 
 from core.google_sheets import (
     read_memo_from_sheet,
     save_memo_to_sheet,
     read_data_from_sheet,
-    write_data_to_sheet,
+    write_data_to_sheet,   
+    append_rows_to_sheet,  
+    get_gspread_client,    
+    get_worksheet,         
 )
 
-# ─────────────────────────────
-# 0) 시트 탭 이름 (홈에서 쓰는 것만 로컬 상수로 정의)
-#    → config.py로 옮겨도 되지만, 일단 여기서 확실하게 정의해 두자
-# ─────────────────────────────
-PLANNED_TASKS_SHEET_NAME = "예정업무"
-ACTIVE_TASKS_SHEET_NAME = "진행업무"
-COMPLETED_TASKS_SHEET_NAME = "완료업무"
+from core.customer_service import (
+    load_customer_df_from_sheet,
+)
 
+def _extract_selected_date(date_raw) -> str | None:
+    """
+    캘린더 콜백에서 넘어온 dateStr / startStr 등을
+    한국 시간(KST, UTC+9) 기준 YYYY-MM-DD 문자열로 맞춰준다.
+    """
+    if not date_raw:
+        return None
+
+    s = str(date_raw)
+
+    # 이미 'YYYY-MM-DD' 형태면 그대로 사용
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-" and "T" not in s:
+        return s[:10]
+
+    try:
+        # ...Z 로 끝나면 ISO 포맷으로 바꿔줌
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+
+        dt = datetime.datetime.fromisoformat(s)  # ✅ 모듈.datetime
+
+        # timezone 정보가 없으면 그냥 date 기준
+        if dt.tzinfo is None:
+            return dt.date().isoformat()
+
+        # 한국(KST, UTC+9) 기준 날짜로 변환
+        kst = datetime.timezone(datetime.timedelta(hours=9))  # ✅ 모듈.timezone/timedelta
+        local_dt = dt.astimezone(kst)
+        return local_dt.date().isoformat()
+
+    except Exception:
+        # 이상하면 일단 앞 10글자만 사용
+        return s[:10]
+
+# ─────────────────────────────
+# 0-1) 일정(달력) 관련 상수 / 헬퍼
+# ─────────────────────────────
+
+SESS_HOME_CAL_YEAR = "home_calendar_year"
+SESS_HOME_CAL_MONTH = "home_calendar_month"
+SESS_HOME_CAL_SELECTED_DATE = "home_calendar_selected_date"
+
+
+# ─────────────────────────────
+# 0-1) 달력용 일정 로딩/저장 헬퍼 (Google Sheets '일정' 시트 사용)
+# ─────────────────────────────
+from streamlit_calendar import calendar
+
+try:
+    import holidays as _holidays
+    KR_HOLIDAYS = _holidays.KR()
+    CN_HOLIDAYS = _holidays.China()
+except Exception:
+    KR_HOLIDAYS = None
+    CN_HOLIDAYS = None
+
+
+@st.cache_data(ttl=300)
+def load_calendar_events_for_tenant(tenant_id: str) -> dict:
+    """현재 테넌트의 '일정' 시트를 읽어서 { 'YYYY-MM-DD': [메모1, 메모2, ...] } 형태로 반환."""
+    rows = read_data_from_sheet(EVENTS_SHEET_NAME, default_if_empty=[])
+    events_by_date: dict[str, list[str]] = {}
+    if not rows:
+        return {}
+
+    for r in rows:
+        # 날짜 컬럼: 옛날/새 이름 모두 대응
+        raw_date = str(
+            r.get("date")
+            or r.get("date_str")
+            or r.get("날짜")
+            or r.get("일자")
+            or ""
+        ).strip()
+        if not raw_date:
+            continue
+        date_str = raw_date[:10]
+
+        # 메모 컬럼: 옛날/새 이름 모두 대응
+        memo_raw = str(
+            r.get("memo")
+            or r.get("event_text")
+            or r.get("메모")
+            or r.get("내용")
+            or ""
+        ).strip()
+        if not memo_raw:
+            continue
+
+        # 여러 줄 메모 → 줄 단위로 쪼개기
+        lines = [ln.strip() for ln in memo_raw.splitlines() if ln.strip()]
+        if not lines:
+            continue
+
+        events_by_date.setdefault(date_str, []).extend(lines)
+
+    return events_by_date
+
+
+def _ensure_events_header(ws):
+    """'일정' 시트에 헤더(date, memo)가 없으면 A1:B1 에만 헤더를 세팅 (기존 데이터는 건드리지 않음)."""
+    try:
+        values = ws.get_values("A1:B1")
+    except Exception:
+        values = []
+    if not values or not values[0]:
+        ws.update("A1:B1", [["date", "memo"]])
+
+
+def save_calendar_events_for_date(date_str: str, lines: list[str]) -> bool:
+    """특정 날짜의 메모 전체를 교체 저장.
+    - lines 에 내용이 있으면 해당 날짜 1줄만 남기고 내용 갱신
+    - lines 가 비어 있으면 해당 날짜 행 전체 삭제
+    절대 전체 시트를 clear 하지 않고, 해당 날짜 row 만 건드린다.
+    """
+    client = get_gspread_client()
+    if client is None:
+        return False
+    ws = get_worksheet(client, EVENTS_SHEET_NAME)
+    if ws is None:
+        return False
+
+    _ensure_events_header(ws)
+
+    try:
+        # 1) 이 날짜에 해당하는 기존 row 들 찾기 (A열 기준)
+        found = ws.findall(date_str)
+        target_rows = [c.row for c in found if c.col == 1]
+
+        if lines:
+            memo_text = "\n".join(lines)
+
+            if target_rows:
+                # 첫 번째 row는 내용만 갱신
+                first_row = min(target_rows)
+                ws.update_cell(first_row, 1, date_str)
+                ws.update_cell(first_row, 2, memo_text)
+                # 나머지 중복 row 는 모두 삭제 (아래에서 위 순서로)
+                for row_idx in sorted(target_rows[1:], reverse=True):
+                    ws.delete_rows(row_idx)
+            else:
+                # 기존 row 가 없으면 새로 추가 (append)
+                ws.append_row([date_str, memo_text])
+        else:
+            # lines 가 비어 있으면 해당 날짜의 row 모두 삭제
+            for row_idx in sorted(target_rows, reverse=True):
+                ws.delete_rows(row_idx)
+
+        # 캐시 비우기 (이 테넌트 일정 다시 로드되도록)
+        load_calendar_events_for_tenant.clear()
+        return True
+
+    except Exception as e:
+        st.error(f"'일정' 시트 저장 중 오류: {e}")
+        return False
+
+
+def _get_day_text_color(dt: datetime.date):
+    """공휴일에 따른 날짜 글자색 결정 (주말은 CSS에서 따로 처리)."""
+    is_kr_holiday = (KR_HOLIDAYS is not None and dt in KR_HOLIDAYS)
+    is_cn_holiday = (CN_HOLIDAYS is not None and dt in CN_HOLIDAYS)
+
+    # 1) 한국 공휴일 우선 (파란색)
+    if is_kr_holiday:
+        return "#1565c0"
+
+    # 2) 중국 공휴일 (빨간색)
+    if is_cn_holiday:
+        return "#d32f2f"
+
+    # 나머지는 기본 색상
+    return None
+
+
+# ─────────────────────────────
+# 0-2) 일정 팝업 다이얼로그 (저장 전 확인 한 번 더)
+# ─────────────────────────────
+if hasattr(st, "dialog"):
+
+    @st.dialog("📌 일정 메모")
+    def show_calendar_dialog(date_str: str):
+        """특정 날짜에 대한 메모를 팝업으로 입력/수정/삭제."""
+        tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+        events_by_date = load_calendar_events_for_tenant(tenant_id)
+        existing_lines = events_by_date.get(date_str, [])
+        default_text = "\n".join(existing_lines)
+
+        # 날짜가 바뀌면 확인 상태 초기화
+        if st.session_state.get("calendar_confirm_date") != date_str:
+            st.session_state["calendar_confirm"] = False
+            st.session_state["calendar_confirm_date"] = date_str
+            st.session_state["calendar_memo_buffer"] = default_text
+
+        # 현재 memo 값 (buffer 기준)
+        current_text = st.session_state.get("calendar_memo_buffer", default_text)
+
+        st.markdown(f"**{date_str} 일정 메모**")
+        memo_text = st.text_area(
+            "한 줄 = 한 일정입니다.",
+            value=current_text,
+            height=150,
+            key="calendar_memo_text",
+        )
+
+        # 항상 최신 입력 내용을 버퍼에 반영
+        st.session_state["calendar_memo_buffer"] = memo_text
+
+        if not st.session_state.get("calendar_confirm", False):
+            # 1단계: 저장 버튼 → "정말 저장하시겠습니까?" 단계로 전환
+            col_save, col_close = st.columns(2)
+            with col_save:
+                if st.button("💾 저장", use_container_width=True):
+                    st.session_state["calendar_confirm"] = True
+                    st.rerun()
+
+            with col_close:
+                if st.button("닫기", use_container_width=True):
+                    # ▶ 팝업 종료 + 다음 한 번은 캘린더 콜백 무시
+                    st.session_state["calendar_confirm"] = False
+                    st.session_state["calendar_memo_buffer"] = ""
+                    st.session_state["home_calendar_dialog_open"] = False
+                    st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = None
+                    st.session_state["suppress_calendar_callback"] = True
+                    st.rerun()
+
+        else:
+            # 2단계: 정말 저장하시겠습니까?
+            st.info("정말 저장하시겠습니까?")
+            col_yes, col_no = st.columns(2)
+            with col_yes:
+                if st.button("예", use_container_width=True):
+                    buffer_text = st.session_state.get("calendar_memo_buffer", "")
+                    new_lines = [ln.strip() for ln in buffer_text.splitlines() if ln.strip()]
+                    save_calendar_events_for_date(date_str, new_lines)
+
+                    # 상태 초기화 + 팝업 종료
+                    st.session_state["calendar_confirm"] = False
+                    st.session_state["calendar_memo_buffer"] = ""
+                    st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = None
+                    st.session_state["home_calendar_dialog_open"] = False
+                    # ▶ 다음 한 번은 캘린더 콜백 무시
+                    st.session_state["suppress_calendar_callback"] = True
+
+                    st.success("저장되었습니다.")
+                    st.rerun()
+
+
+            with col_no:
+                if st.button("아니오", use_container_width=True):
+                    # 확인만 취소하고, 팝업/내용은 그대로 유지
+                    st.session_state["calendar_confirm"] = False
+                    st.rerun()
+
+    @st.dialog("📆 년/월 선택")
+    def show_month_picker_dialog():
+        today = datetime.date.today()
+        cur_year = st.session_state.get(SESS_HOME_SELECTED_YEAR, today.year)
+        cur_month = st.session_state.get(SESS_HOME_SELECTED_MONTH, today.month)
+
+        # 연도 범위는 현재 기준 ±5년 정도
+        years = list(range(cur_year - 5, cur_year + 6))
+        if cur_year not in years:
+            years.append(cur_year)
+            years.sort()
+
+        months = list(range(1, 13))
+
+        year_idx = years.index(cur_year)
+        month_idx = cur_month - 1 if 1 <= cur_month <= 12 else 0
+
+        sel_year = st.selectbox("년도", years, index=year_idx)
+        sel_month = st.selectbox("월", months, index=month_idx)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("확인", use_container_width=True):
+                st.session_state[SESS_HOME_SELECTED_YEAR] = sel_year
+                st.session_state[SESS_HOME_SELECTED_MONTH] = sel_month
+                st.session_state["home_month_picker_open"] = False
+                st.rerun()
+        with c2:
+            if st.button("취소", use_container_width=True):
+                st.session_state["home_month_picker_open"] = False
+                st.rerun()
+
+
+else:
+    # Streamlit 버전이 낮아 experimental_dialog 가 없는 경우:
+    # 달력 아래에 카드 형식으로 노출하는 fallback
+    def show_calendar_dialog(date_str: str):
+        tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+        events_by_date = load_calendar_events_for_tenant(tenant_id)
+        existing_lines = events_by_date.get(date_str, [])
+        default_text = "\n".join(existing_lines)
+
+        st.markdown(f"#### 📌 {date_str} 일정 메모")
+        memo_text = st.text_area(
+            "한 줄 = 한 일정입니다.",
+            value=default_text,
+            height=150,
+            key="calendar_memo_text_inline",
+        )
+        col_save, col_close = st.columns(2)
+        with col_save:
+            if st.button("💾 저장", use_container_width=True):
+                new_lines = [ln.strip() for ln in memo_text.splitlines() if ln.strip()]
+                save_calendar_events_for_date(date_str, new_lines)
+                st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = None
+                st.success("저장되었습니다.")
+                st.rerun()
+        with col_close:
+            if st.button("닫기", use_container_width=True):
+                st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = None
+    
+    def show_month_picker_dialog():
+        today = datetime.date.today()
+        cur_year = st.session_state.get(SESS_HOME_SELECTED_YEAR, today.year)
+        cur_month = st.session_state.get(SESS_HOME_SELECTED_MONTH, today.month)
+
+        st.markdown("#### 📆 년/월 선택")
+        sel_year = st.number_input("년도", value=cur_year, step=1)
+        sel_month = st.number_input("월", value=cur_month, min_value=1, max_value=12, step=1)
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("확인", use_container_width=True):
+                st.session_state[SESS_HOME_SELECTED_YEAR] = int(sel_year)
+                st.session_state[SESS_HOME_SELECTED_MONTH] = int(sel_month)
+                st.session_state["home_month_picker_open"] = False
+                st.rerun()
+        with c2:
+            if st.button("취소", use_container_width=True):
+                st.session_state["home_month_picker_open"] = False
 
 # ─────────────────────────────
 # 1) 단기메모 로드/저장
 # ─────────────────────────────
-@st.cache_data(ttl=600)
 def load_short_memo():
     """구글시트 '단기메모' 시트에서 A1 셀 내용을 읽어옵니다."""
     return read_memo_from_sheet(MEMO_SHORT_SHEET_NAME)
 
-
 def save_short_memo(content: str) -> bool:
-    """
-    단기메모 저장.
-    - 성공하면 True, 실패하면 False
-    - 저장 후 load_short_memo 캐시 초기화
-    """
+    tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
     if save_memo_to_sheet(MEMO_SHORT_SHEET_NAME, content):
         load_short_memo.clear()
+        # 필요하면 여기서 load_short_memo(tenant_id) 로 재캐시
         return True
     return False
 
@@ -95,7 +430,7 @@ def save_completed_tasks_to_sheet(records):
     return ok
 
 
-# ─────────────────────────────
+# load_events_from_sheet
 # 3) 홈 페이지 렌더
 # ─────────────────────────────
 def render():
@@ -108,20 +443,173 @@ def render():
     home_col_left, home_col_right = st.columns(2)
 
     # ── 1. 왼쪽: 구글 캘린더 + 단기메모 ─────────────────
+    # ── 1. 왼쪽: 월간 일정 달력 + 단기메모 ─────────────────
+    # ── 1. 왼쪽: 월간 달력 + 날짜별 메모 + 단기메모 ─────────────────
+    # ── 1. 왼쪽: 월간 달력 + 단기메모 ─────────────────
     with home_col_left:
         st.subheader("1. 📅 일정 달력")
 
-        google_calendar_embed_code = """
-        <iframe src="https://calendar.google.com/calendar/embed?height=600&wkst=1&ctz=Asia%2FSeoul&showPrint=0&src=d2tkd2hmbEBnbWFpbC5jb20&src=ZDEzOGVmN2MzNDVjY2YwNzE5MDBjOGVmMDVlMDlkYzZmZDFkZWVjNzQ5ZjBmNWMwM2I3NGZhY2EyODkwMGI5ZkBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=a28uc291dGhfa29yZWEjaG9saWRheUBncm91cC52LmNhbGVuZGFyLmdvb2dsZS5jb20&color=%237986cb&color=%239e69af&color=%230b8043"
-                style="border:solid 1px #777" width="100%" height="600" frameborder="0" scrolling="no"></iframe>
-        """
+        # 세션에 현재 보고 있는 년/월 없으면 오늘 기준으로 초기화
+        today = datetime.date.today()
+        if SESS_HOME_SELECTED_YEAR not in st.session_state:
+            st.session_state[SESS_HOME_SELECTED_YEAR] = today.year
+        if SESS_HOME_SELECTED_MONTH not in st.session_state:
+            st.session_state[SESS_HOME_SELECTED_MONTH] = today.month
 
-        st.components.v1.html(google_calendar_embed_code, height=630, scrolling=True)
+        year = st.session_state[SESS_HOME_SELECTED_YEAR]
+        month = st.session_state[SESS_HOME_SELECTED_MONTH]
 
-        # 단기 메모
+        # 상단: 이전/다음 달 이동 + '2025년 8월' 텍스트
+        nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
+
+        with nav_col1:
+            prev_clicked = st.button("◀", key="home_cal_prev_month", use_container_width=True)
+        with nav_col3:
+            next_clicked = st.button("▶", key="home_cal_next_month", use_container_width=True)
+
+        # 먼저 클릭 처리해서 year/month 값을 갱신
+        if prev_clicked:
+            if month == 1:
+                month = 12
+                year -= 1
+            else:
+                month -= 1
+            st.session_state[SESS_HOME_SELECTED_YEAR] = year
+            st.session_state[SESS_HOME_SELECTED_MONTH] = month
+            st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = None
+            st.session_state["home_calendar_dialog_open"] = False
+
+        elif next_clicked:
+            if month == 12:
+                month = 1
+                year += 1
+            else:
+                month += 1
+            st.session_state[SESS_HOME_SELECTED_YEAR] = year
+            st.session_state[SESS_HOME_SELECTED_MONTH] = month
+            st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = None
+            st.session_state["home_calendar_dialog_open"] = False
+
+        # 갱신된 year/month 기준으로 중앙 버튼 표시
+        with nav_col2:
+            if st.button(f"{year}년 {month}월", key="home_cal_month_label", use_container_width=True):
+                st.session_state["home_month_picker_open"] = True
+        
+                # 년/월 선택 팝업 열기
+        if st.session_state.get("home_month_picker_open"):
+            show_month_picker_dialog()
+
+
+        tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+        events_by_date = load_calendar_events_for_tenant(tenant_id)
+
+        # FullCalendar 에 넘길 events 리스트 구성
+        calendar_events = []
+        for date_str, lines in events_by_date.items():
+            for line in lines:
+                event = {
+                    "title": line,
+                    "start": date_str,   # "YYYY-MM-DD"
+                    "allDay": True,
+                }
+                calendar_events.append(event)
+
+
+        # 주말/공휴일 색상, 이벤트 있는 날짜 하이라이트, 마우스 포인터 처리용 CSS
+        base_css = '''
+        .fc .fc-col-header-cell.fc-day-sun { color: red; }
+        .fc .fc-col-header-cell.fc-day-sat { color: blue; }
+
+        /* 주말 날짜 숫자 색상 */
+        .fc .fc-day-sun .fc-daygrid-day-number { color: red; }
+        .fc .fc-day-sat .fc-daygrid-day-number { color: blue; }
+
+        .fc .fc-daygrid-day:hover { cursor: pointer; }
+
+        /* 날짜 칸 안의 일정 텍스트를 작게 여러 줄로 보여주기 */
+        .fc .fc-daygrid-day .fc-daygrid-event {
+            font-size: 0.70rem;
+            line-height: 1.1;
+            margin-top: 2px;
+            padding: 0 2px;
+            white-space: normal;
+        }
+        /* 점(dot) 스타일 숨기기 */
+        .fc .fc-daygrid-day .fc-daygrid-event-dot {
+            display: none;
+        }
+        '''
+
+        # 현재 월의 날짜별 색상을 동적으로 생성
+        date_css_parts = []
+        last_day = pycal.monthrange(year, month)[1]
+        for day in range(1, last_day + 1):
+            dt = datetime.date(year, month, day)
+            color = _get_day_text_color(dt)
+            if color:
+                date_css_parts.append(
+                    f'.fc .fc-daygrid-day[data-date="{dt.isoformat()}"] .fc-daygrid-day-number {{ color: {color}; }}'
+                )
+
+        custom_css = base_css + "\n".join(date_css_parts)
+
+        options = {
+            "initialView": "dayGridMonth",
+            "initialDate": datetime.date(year, month, 1).isoformat(),
+            "locale": "ko",
+            "height": 600,
+            "headerToolbar": { "left": "", "center": "", "right": "" },  # 상단 헤더는 숨기고, 우리가 만든 상단 네비만 사용
+        }
+
+        st.markdown(f"<style>{custom_css}</style>", unsafe_allow_html=True)
+
+        cal_state = calendar(
+            events=calendar_events,
+            options=options,
+            custom_css=custom_css,
+            key=f"home_calendar_{year}_{month}",
+            callbacks=["dateClick", "eventClick"],
+        )
+
+        # 날짜 클릭 / 이벤트 클릭 → 선택된 날짜 계산
+        # 날짜 클릭 / 이벤트 클릭 → 선택된 날짜 계산
+        selected_date_str = None
+        suppress = st.session_state.get("suppress_calendar_callback", False)
+
+        if cal_state and not suppress:
+            cb = cal_state.get("callback")
+
+            # 날짜를 직접 클릭했을 때
+            if cb == "dateClick":
+                dc = cal_state.get("dateClick", {})
+                date_raw = dc.get("dateStr") or dc.get("date")
+                selected_date_str = _extract_selected_date(date_raw)
+
+            # 이미 등록된 메모(이벤트)를 클릭했을 때
+            elif cb == "eventClick":
+                ev = cal_state.get("eventClick", {}).get("event", {})
+                date_raw = ev.get("startStr") or ev.get("start")
+                selected_date_str = _extract_selected_date(date_raw)
+
+        elif suppress:
+            # 한 번 콜백을 무시하고 플래그 해제
+            st.session_state["suppress_calendar_callback"] = False
+
+        # 선택된 날짜가 있으면 세션에 저장하고, 팝업 플래그 ON
+        if selected_date_str:
+            st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = selected_date_str
+            st.session_state["home_calendar_dialog_open"] = True
+
+        # 팝업(또는 fallback 카드) 띄우기
+        sel_date = st.session_state.get(SESS_HOME_CALENDAR_SELECTED_DATE)
+        if st.session_state.get("home_calendar_dialog_open") and sel_date:
+            show_calendar_dialog(sel_date)
+
+
+        # 6) 기존 단기메모는 아래에 그대로 유지
         memo_short_content = load_short_memo()
         edited_memo_short = st.text_area(
-            "📗 단기메모",
+            "📝 단기메모",
             value=memo_short_content,
             height=200,
             key="memo_short_text_area",
@@ -132,11 +620,16 @@ def render():
             else:
                 st.error("단기메모 저장 중 오류가 발생했습니다.")
 
+
     # ── 2·3. 오른쪽: 만기 알림(등록증/여권) ─────────────────
     with home_col_right:
         st.subheader("2. 🪪 등록증 만기 4개월 전")
 
-        df_customers_for_alert_view = st.session_state.get(SESS_DF_CUSTOMER, pd.DataFrame())
+        # 👉 홈 들어올 때마다, 현재 테넌트 기준으로 고객 DF 다시 로딩
+        tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+        df_customers_for_alert_view = load_customer_df_from_sheet(tenant_id)
+        st.session_state[SESS_DF_CUSTOMER] = df_customers_for_alert_view.copy()
+
         if df_customers_for_alert_view.empty:
             st.write("(표시할 고객 없음)")
         else:
