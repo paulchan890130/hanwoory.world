@@ -14,6 +14,7 @@ from googleapiclient.errors import HttpError
 from config import (
     CUSTOMER_SHEET_NAME,
     PARENT_DRIVE_FOLDER_ID,
+    CUSTOMER_PARENT_FOLDER_ID, 
     SESS_DF_CUSTOMER,
     ENABLE_CUSTOMER_FOLDERS,
     SESS_TENANT_ID,
@@ -38,9 +39,8 @@ def is_customer_folder_enabled() -> bool:
 
     tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
     if tenant_id != DEFAULT_TENANT_ID:
-        # 필요하다면 여기 주석 풀어서 기본 테넌트(한우리)만 허용
-        # return False
-        pass
+        # ✅ 한우리(기본 테넌트)가 아니면 고객폴더 기능 사용 불가
+        return False
 
     return True
 
@@ -97,7 +97,7 @@ def create_customer_folders(df_customers: pd.DataFrame, worksheet=None):
         return
 
     drive_svc = get_drive_service()
-    parent_id = PARENT_DRIVE_FOLDER_ID
+    parent_id = CUSTOMER_PARENT_FOLDER_ID
 
     # 1) 부모 폴더의 하위 폴더 목록(name→id) 한 번만 가져오기
     resp = drive_svc.files().list(

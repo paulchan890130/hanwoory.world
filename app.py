@@ -379,13 +379,21 @@ def create_office_account_via_signup(
     if "created_at" in new_rec:
         new_rec["created_at"] = datetime.date.today().isoformat()
 
-    # 5) 기존 records에 추가 후 통째로 저장
+    ok = append_rows_to_sheet(
+        ACCOUNTS_SHEET_NAME,
+        [new_rec],           # dict 1개를 리스트로 감싸서 전달
+        header_list=header_list,
+    )
+    if not ok:
+        raise RuntimeError("Accounts 시트에 신규 계정을 추가하지 못했습니다.")
+
     # Accounts가 바뀌었으니, 테넌트 sheet_key 캐시를 초기화
     try:
         from core.google_sheets import _load_tenant_sheet_keys
         _load_tenant_sheet_keys.clear()
     except Exception:
         st.cache_data.clear()
+
 
 def find_account(login_id: str):
     records = read_data_from_sheet(ACCOUNTS_SHEET_NAME, default_if_empty=[])

@@ -19,6 +19,7 @@ else:
 
 # ===== 드라이브/도장 등 경로 상수 =====
 PARENT_DRIVE_FOLDER_ID = "1OX5tH9MOYz9leeYJ_KIrBHWBZxMXjb16"
+CUSTOMER_PARENT_FOLDER_ID = "1vAT3OvELPhosJ99Zg1fJ5hKJEgx7kNlW"  # ✅ 고객폴더 전용 부모 폴더
 
 circle_path = "templates/원형 배경.png"
 font_path   = "Fonts/HJ한전서B.ttf"
