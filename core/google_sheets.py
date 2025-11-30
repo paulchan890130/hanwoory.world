@@ -6,6 +6,7 @@ from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials as UserCredentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from googleapiclient.errors import HttpError
 from config import OAUTH_CLIENT_SECRET_PATH, OAUTH_TOKEN_PATH, RUN_ENV
 import os
 
@@ -294,42 +295,67 @@ import streamlit as st
 from googleapiclient.discovery import build
 # ... 기존 import 그대로 두고, 아래 함수만 추가
 
-@st.cache_data(ttl=300)
-def get_sheet_column_widths(sheet_key: str, sheet_title: str) -> dict[int, int]:
+@st.cache_data(ttl=600)
+def get_sheet_column_widths(sheet_key: str, sheet_name: str) -> dict[int, int]:
     """
-    구글시트의 열 너비(pixelSize)를 읽어와서
-    {열 인덱스(0-based): pixelSize} 형태로 리턴.
+    구글시트의 열 너비(pixel)를 읽어서
+    {컬럼인덱스(0-based): width} 형태로 반환.
+
+    - get_gspread_client() 가 사용하는 동일 OAuth creds 재사용
+    - 로컬 / 서버(Render) 공통 사용
     """
-    # 스프레드시트 읽기 전용 권한
-    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-    creds = get_user_credentials(scopes)
-    service = build("sheets", "v4", credentials=creds)
+    client = get_gspread_client()
+    if client is None:
+        return {}
 
-    resp = service.spreadsheets().get(
-        spreadsheetId=sheet_key,
-        fields="sheets(properties(title),data(columnMetadata(pixelSize)))",
-    ).execute()
+    try:
+        # gspread Client 안에 들어있는 Credentials 그대로 사용
+        creds = getattr(client, "auth", None)
+        if creds is None:
+            return {}
 
-    widths: dict[int, int] = {}
+        # Sheets API 서비스 객체
+        service = build("sheets", "v4", credentials=creds, cache_discovery=False)
 
-    for sheet in resp.get("sheets", []):
-        props = sheet.get("properties", {})
-        title = props.get("title")
-        if title != sheet_title:
-            continue
+        resp = (
+            service.spreadsheets()
+            .get(
+                spreadsheetId=sheet_key,
+                includeGridData=True,
+                fields="sheets(properties(title),data(columnMetadata(pixelSize)))",
+            )
+            .execute()
+        )
 
-        data_blocks = sheet.get("data", [])
-        if not data_blocks:
-            break
+        widths: dict[int, int] = {}
 
-        col_meta = data_blocks[0].get("columnMetadata", [])
-        for idx, meta in enumerate(col_meta):
-            pixel = meta.get("pixelSize")
-            if pixel:
-                widths[idx] = pixel
-        break
+        for sheet in resp.get("sheets", []):
+            props = sheet.get("properties", {})
+            title = props.get("title")
+            if title != sheet_name:
+                continue
 
-    return widths
+            data_list = sheet.get("data", [])
+            if not data_list:
+                break
+
+            # 첫 번째 GridData 블록 기준
+            col_meta = data_list[0].get("columnMetadata", [])
+            for idx, meta in enumerate(col_meta):
+                pixel = meta.get("pixelSize")
+                if pixel is not None:
+                    widths[idx] = pixel
+
+            break  # 원하는 시트 찾았으니 종료
+
+        return widths
+
+    except HttpError as e:
+        print(f"[get_sheet_column_widths] HttpError: {e}")
+        return {}
+    except Exception as e:
+        print(f"[get_sheet_column_widths] Unexpected error: {e}")
+        return {}
 
 
 def get_work_sheet_key_for_tenant(tenant_id: str) -> str:
