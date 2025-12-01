@@ -249,12 +249,12 @@ if hasattr(st, "dialog"):
             # 1단계: 저장 버튼 → "정말 저장하시겠습니까?" 단계로 전환
             col_save, col_close = st.columns(2)
             with col_save:
-                if st.button("💾 저장", use_container_width=True):
+                if st.button("💾 저장", width="stretch"):
                     st.session_state["calendar_confirm"] = True
                     st.rerun()
 
             with col_close:
-                if st.button("닫기", use_container_width=True):
+                if st.button("닫기", width="stretch"):
                     # ▶ 팝업 종료 + 다음 한 번은 캘린더 콜백 무시
                     st.session_state["calendar_confirm"] = False
                     st.session_state["calendar_memo_buffer"] = ""
@@ -268,7 +268,7 @@ if hasattr(st, "dialog"):
             st.info("정말 저장하시겠습니까?")
             col_yes, col_no = st.columns(2)
             with col_yes:
-                if st.button("예", use_container_width=True):
+                if st.button("예", width="stretch"):
                     buffer_text = st.session_state.get("calendar_memo_buffer", "")
                     new_lines = [ln.strip() for ln in buffer_text.splitlines() if ln.strip()]
                     save_calendar_events_for_date(date_str, new_lines)
@@ -286,7 +286,7 @@ if hasattr(st, "dialog"):
 
 
             with col_no:
-                if st.button("아니오", use_container_width=True):
+                if st.button("아니오", width="stretch"):
                     # 확인만 취소하고, 팝업/내용은 그대로 유지
                     st.session_state["calendar_confirm"] = False
                     st.rerun()
@@ -313,13 +313,13 @@ if hasattr(st, "dialog"):
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("확인", use_container_width=True):
+            if st.button("확인", width="stretch"):
                 st.session_state[SESS_HOME_SELECTED_YEAR] = sel_year
                 st.session_state[SESS_HOME_SELECTED_MONTH] = sel_month
                 st.session_state["home_month_picker_open"] = False
                 st.rerun()
         with c2:
-            if st.button("취소", use_container_width=True):
+            if st.button("취소", width="stretch"):
                 st.session_state["home_month_picker_open"] = False
                 st.rerun()
 
@@ -342,14 +342,14 @@ else:
         )
         col_save, col_close = st.columns(2)
         with col_save:
-            if st.button("💾 저장", use_container_width=True):
+            if st.button("💾 저장", width="stretch"):
                 new_lines = [ln.strip() for ln in memo_text.splitlines() if ln.strip()]
                 save_calendar_events_for_date(date_str, new_lines)
                 st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = None
                 st.success("저장되었습니다.")
                 st.rerun()
         with col_close:
-            if st.button("닫기", use_container_width=True):
+            if st.button("닫기", width="stretch"):
                 st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = None
     
     def show_month_picker_dialog():
@@ -362,13 +362,13 @@ else:
         sel_month = st.number_input("월", value=cur_month, min_value=1, max_value=12, step=1)
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("확인", use_container_width=True):
+            if st.button("확인", width="stretch"):
                 st.session_state[SESS_HOME_SELECTED_YEAR] = int(sel_year)
                 st.session_state[SESS_HOME_SELECTED_MONTH] = int(sel_month)
                 st.session_state["home_month_picker_open"] = False
                 st.rerun()
         with c2:
-            if st.button("취소", use_container_width=True):
+            if st.button("취소", width="stretch"):
                 st.session_state["home_month_picker_open"] = False
 
 # ─────────────────────────────
@@ -463,9 +463,9 @@ def render():
         nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
 
         with nav_col1:
-            prev_clicked = st.button("◀", key="home_cal_prev_month", use_container_width=True)
+            prev_clicked = st.button("◀", key="home_cal_prev_month", width="stretch")
         with nav_col3:
-            next_clicked = st.button("▶", key="home_cal_next_month", use_container_width=True)
+            next_clicked = st.button("▶", key="home_cal_next_month", width="stretch")
 
         # 먼저 클릭 처리해서 year/month 값을 갱신
         if prev_clicked:
@@ -492,7 +492,7 @@ def render():
 
         # 갱신된 year/month 기준으로 중앙 버튼 표시
         with nav_col2:
-            if st.button(f"{year}년 {month}월", key="home_cal_month_label", use_container_width=True):
+            if st.button(f"{year}년 {month}월", key="home_cal_month_label", width="stretch"):
                 st.session_state["home_month_picker_open"] = True
         
                 # 년/월 선택 팝업 열기
@@ -614,7 +614,7 @@ def render():
             height=200,
             key="memo_short_text_area",
         )
-        if st.button("💾 단기메모 저장", key="save_memo_short_btn", use_container_width=True):
+        if st.button("💾 단기메모 저장", key="save_memo_short_btn", width="stretch"):
             if save_short_memo(edited_memo_short):
                 st.success("단기메모를 저장했습니다.")
             else:
@@ -702,8 +702,14 @@ def render():
 
             # 등록증 만기 알림 (오늘 ~ 4개월 이내)
             df_customers_for_alert_view['등록증만기일_dt_alert'] = pd.to_datetime(
-                df_customers_for_alert_view.get('만기일'), errors='coerce'
+                df_customers_for_alert_view.get('만기일')
+                    .astype(str)
+                    .str.replace(".", "-")
+                    .str.slice(0, 10),
+                format="%Y-%m-%d",
+                errors="coerce",
             )
+
             today_ts = pd.Timestamp.today().normalize()
             card_alert_limit_date = today_ts + pd.DateOffset(months=4)
 
@@ -718,7 +724,7 @@ def render():
                 display_df_card_alert_view['등록증만기일'] = card_alerts_df['등록증만기일_dt_alert'].dt.strftime('%Y-%m-%d')
                 st.dataframe(
                     display_df_card_alert_view[['한글이름', '등록증만기일', '여권번호', '생년월일', '전화번호']],
-                    use_container_width=True, hide_index=True
+                    width="stretch", hide_index=True
                 )
             else:
                 st.write("(만기 예정 등록증 없음)")
@@ -729,8 +735,12 @@ def render():
             st.write("(표시할 고객 없음)")
         else:
             df_customers_for_alert_view['여권만기일_dt_alert'] = pd.to_datetime(
-                df_customers_for_alert_view.get('만기').astype(str).str.strip(),
-                errors='coerce'
+                df_customers_for_alert_view.get('만기')
+                    .astype(str)
+                    .str.replace(".", "-")
+                    .str.slice(0, 10),
+                format="%Y-%m-%d",
+                errors="coerce",
             )
             today_ts = pd.Timestamp.today().normalize()
             passport_alert_limit_date = today_ts + pd.DateOffset(months=6)
@@ -745,7 +755,7 @@ def render():
                 display_df_passport_alert_view['여권만기일'] = passport_alerts_df['여권만기일_dt_alert'].dt.strftime('%Y-%m-%d')
                 st.dataframe(
                     display_df_passport_alert_view[['한글이름', '여권만기일', '여권번호', '생년월일', '전화번호']],
-                    use_container_width=True, hide_index=True
+                    width="stretch", hide_index=True
                 )
             else:
                 st.write("(만기 예정 여권 없음)")
@@ -809,7 +819,7 @@ def render():
         )
 
         # 수정 버튼
-        if cols[4].button("✏️", key=f"plan_edit_{uid}", use_container_width=True):
+        if cols[4].button("✏️", key=f"plan_edit_{uid}", width="stretch"):
             task_item.update({
                 "period": new_p,
                 "date":   new_d.strftime("%Y-%m-%d"),
@@ -822,7 +832,7 @@ def render():
             st.rerun()
 
         # 삭제 요청 버튼
-        if cols[5].button("❌", key=f"plan_delete_{uid}", use_container_width=True):
+        if cols[5].button("❌", key=f"plan_delete_{uid}", width="stretch"):
             st.session_state["confirm_delete_idx"] = idx_plan
 
     # 삭제 확인 UI
@@ -832,14 +842,14 @@ def render():
         st.warning(f"예정업무(ID:{task['id']})를 삭제하시겠습니까?")
         c_yes, c_no = st.columns(2, gap="small")
         with c_yes:
-            if st.button("✅ 예, 삭제합니다", key="confirm_yes", use_container_width=True):
+            if st.button("✅ 예, 삭제합니다", key="confirm_yes", width="stretch"):
                 planned_tasks_editable_list.pop(idx)
                 st.session_state[SESS_PLANNED_TASKS_TEMP] = planned_tasks_editable_list
                 save_planned_tasks_to_sheet(planned_tasks_editable_list)
                 st.session_state["confirm_delete_idx"] = None
                 st.rerun()
         with c_no:
-            if st.button("❌ 아니오, 취소합니다", key="confirm_no", use_container_width=True):
+            if st.button("❌ 아니오, 취소합니다", key="confirm_no", width="stretch"):
                 st.session_state["confirm_delete_idx"] = None
                 st.rerun()
 
@@ -854,7 +864,7 @@ def render():
                             placeholder="업무 내용", label_visibility="collapsed")
         an = ac3.text_input("비고", key="add_plan_note_form",
                             placeholder="참고 사항", label_visibility="collapsed")
-        add_btn = ac4.form_submit_button("➕ 추가", use_container_width=True)
+        add_btn = ac4.form_submit_button("➕ 추가", width="stretch")
 
         if add_btn:
             if not ac:
@@ -957,7 +967,7 @@ def render():
             )
 
         # ✏️ 수정
-        if cols[6].button("✏️", key=f"active_edit_{uid}", use_container_width=True):
+        if cols[6].button("✏️", key=f"active_edit_{uid}", width="stretch"):
             full_list = st.session_state[SESS_ACTIVE_TASKS_TEMP]
             for i, t in enumerate(full_list):
                 if t["id"] == uid:
@@ -974,7 +984,7 @@ def render():
             st.rerun()
 
         # 🅿️ 처리 토글
-        if cols[7].button("🅿️", key=f"active_proc_{uid}", use_container_width=True, help="처리 상태 변경"):
+        if cols[7].button("🅿️", key=f"active_proc_{uid}", width="stretch", help="처리 상태 변경"):
             full_list = st.session_state[SESS_ACTIVE_TASKS_TEMP]
             for i, t in enumerate(full_list):
                 if t["id"] == uid:
@@ -988,7 +998,7 @@ def render():
             st.rerun()
 
         # ✅ 완료로 이동
-        if cols[8].button("✅", key=f"active_complete_{uid}", use_container_width=True, help="완료 처리"):
+        if cols[8].button("✅", key=f"active_complete_{uid}", width="stretch", help="완료 처리"):
             full_list = st.session_state[SESS_ACTIVE_TASKS_TEMP]
             completed_item = None
             for i, t in enumerate(full_list):
@@ -1006,7 +1016,7 @@ def render():
                 st.rerun()
 
         # ❌ 삭제 요청
-        if cols[9].button("❌", key=f"active_request_del_{uid}", use_container_width=True):
+        if cols[9].button("❌", key=f"active_request_del_{uid}", width="stretch"):
             st.session_state["active_delete_uid"] = uid
             st.rerun()
 
@@ -1016,7 +1026,7 @@ def render():
         st.warning(f"진행업무(ID:{del_uid})를 정말 삭제하시겠습니까?")
         c1, c2 = st.columns(2, gap="small")
         with c1:
-            if st.button("✅ 예, 삭제", key=f"active_confirm_yes_{del_uid}", use_container_width=True):
+            if st.button("✅ 예, 삭제", key=f"active_confirm_yes_{del_uid}", width="stretch"):
                 full = st.session_state[SESS_ACTIVE_TASKS_TEMP]
                 new_list = [t for t in full if t["id"] != del_uid]
                 st.session_state[SESS_ACTIVE_TASKS_TEMP] = new_list
@@ -1025,7 +1035,7 @@ def render():
                 st.success("🗑️ 삭제되었습니다.")
                 st.rerun()
         with c2:
-            if st.button("❌ 취소", key=f"active_confirm_no_{del_uid}", use_container_width=True):
+            if st.button("❌ 취소", key=f"active_confirm_no_{del_uid}", width="stretch"):
                 del st.session_state["active_delete_uid"]
                 st.info("삭제가 취소되었습니다.")
                 st.rerun()
