@@ -350,7 +350,7 @@ def render():
 
                 # 공통: DF는 새로 다시 읽어와서 세션에 반영
                 load_customer_df_from_sheet.clear()
-                fresh_df = load_customer_df_from_sheet()
+                fresh_df = load_customer_df_from_sheet(tenant_id)
                 st.session_state[SESS_DF_CUSTOMER] = fresh_df
 
                 # 👉 폴더 기능이 켜져 있을 때만 실제 폴더 생성 + 메시지 출력
