@@ -284,31 +284,75 @@ def parse_passport(img):
     if img is None:
         return {}
 
+    # 🔹 성능 보호: 너무 큰 이미지는 한 변 최대 1600px 로 축소
+    max_side = 1600
+    w0, h0 = img.size
+    scale = max_side / float(max(w0, h0))
+    if scale < 1.0:
+        img = img.resize(
+            (int(w0 * scale), int(h0 * scale)),
+            resample=_PILImage.LANCZOS,
+        )
+
     w, h = img.size
     band = img.crop((0, int(h * 0.58), w, h))  # 하단 MRZ 영역
 
     texts = []
+
+    def _ocr_mrz_block(im):
+        """
+        MRZ 전용 OCR:
+        - 1차: ocrb+eng
+        - 2차: eng (ocrb 미설치/오류 대비)
+        psm 7, 6 두 번 시도
+        """
+        lines = []
+        cfg_common = "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ<0123456789"
+        for psm in (7, 6):
+            # 1차: ocrb+eng
+            txt = _ocr(im, lang="ocrb+eng", config=f"--oem 3 --psm {psm} {cfg_common}")
+            if txt.strip():
+                lines.append(txt)
+                continue
+
+            # 2차: eng (ocrb 없을 때용)
+            txt = _ocr(im, lang="eng", config=f"--oem 3 --psm {psm} {cfg_common}")
+            if txt.strip():
+                lines.append(txt)
+        return "\n".join(lines)
+
+    # 전처리 3종(부드러운 이진화, 기본 대비, 원본)을 각각 시도
     for pre in (_binarize_soft, _pre, lambda x: x):
         try:
             im = pre(band)
         except Exception:
             im = band
-        t7 = _ocr(
-            im,
-            lang="ocrb+eng",
-            config="--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ<0123456789",
-        ) or ""
-        t6 = _ocr(
-            im,
-            lang="ocrb+eng",
-            config="--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ<0123456789",
-        ) or ""
-        texts.append(t7 + "\n" + t6)
+        block_txt = _ocr_mrz_block(im)
+        if block_txt.strip():
+            texts.append(block_txt)
 
-    joined = "\n".join(t for t in texts if t)
-    L1, L2 = find_mrz_pair_from_text(joined)
-    if not L1 or not L2:
+    joined = "\n".join(t for t in texts if t.strip())
+    if not joined:
+        # MRZ 후보 자체가 안 나오면 그냥 포기
         return {}
+
+    # 1차: 기존 TD3 검증 로직으로 MRZ 2줄 찾기
+    L1, L2 = find_mrz_pair_from_text(joined)
+
+    # 2차: 그래도 못 찾으면 '<'가 많이 들어간 줄 두 개를 강제로 선택
+    if not L1 or not L2:
+        lines = [l for l in joined.splitlines() if l.strip()]
+        scored = []
+        for l in lines:
+            score = l.count('<') + sum(c.isdigit() for c in l)
+            if score >= 10:  # MRZ 느낌 나는 줄만
+                scored.append((score, _normalize_mrz_line(l)))
+        scored.sort(key=lambda x: x[0])
+        if len(scored) >= 2:
+            L1 = scored[-2][1]
+            L2 = scored[-1][1]
+        else:
+            return {}
 
     out = _parse_mrz_pair(L1, L2)
     return {
@@ -319,6 +363,7 @@ def parse_passport(img):
         "만기":     out.get("만기", ""),
         "생년월일": out.get("생년월일", ""),
     }
+
 
 # 등록증(ARC) 관련 보조 정규식/함수들 (사용하던 버전 그대로)
 _ADDR_BAN_RE = re.compile(
