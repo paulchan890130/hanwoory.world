@@ -706,14 +706,14 @@ def render():
     # 이미지/미리보기 + 파싱
     if passport_file:
         img_p = open_image_safe(passport_file)
-        st.image(img_p, caption="여권", use_container_width=True)
+        st.image(img_p, caption="여권", width="stretch")
         parsed_passport = parse_passport(img_p)
     else:
         img_p = None
 
     if arc_file:
         img_a = open_image_safe(arc_file)
-        st.image(img_a, caption="등록증/스티커", use_container_width=True)
+        st.image(img_a, caption="등록증/스티커", width="stretch")
         parsed_arc = parse_arc(img_a)
     else:
         img_a = None
@@ -746,7 +746,7 @@ def render():
                 w, h = img_p.size
                 mrz_crop = img_p.crop((0, int(h*0.6), w, h))
                 mrz_bin = _binarize(mrz_crop)
-                st.image(mrz_bin, caption="MRZ(하단부) 샘플", use_container_width=True)
+                st.image(mrz_bin, caption="MRZ(하단부) 샘플", width="stretch")
                 st.code(_ocr(
                     mrz_bin,
                     "eng",
@@ -879,6 +879,6 @@ def render():
             if st.session_state.get("scan_saved_ok"):
                 st.success("✅ 고객관리 데이터에 반영이 완료되었습니다.")
 
-    if st.button("← 고객관리로 돌아가기", use_container_width=True):
+    if st.button("← 고객관리로 돌아가기", width="stretch"):
         st.session_state[SESS_CURRENT_PAGE] = PAGE_CUSTOMER
         st.rerun()

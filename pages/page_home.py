@@ -702,7 +702,12 @@ def render():
 
             # 등록증 만기 알림 (오늘 ~ 4개월 이내)
             df_customers_for_alert_view['등록증만기일_dt_alert'] = pd.to_datetime(
-                df_customers_for_alert_view.get('만기일'), errors='coerce'
+                df_customers_for_alert_view.get('만기일')
+                    .astype(str)
+                    .str.replace(".", "-")
+                    .str.slice(0, 10),
+                format="%Y-%m-%d",
+                errors="coerce",
             )
             today_ts = pd.Timestamp.today().normalize()
             card_alert_limit_date = today_ts + pd.DateOffset(months=4)
@@ -729,9 +734,13 @@ def render():
             st.write("(표시할 고객 없음)")
         else:
             df_customers_for_alert_view['여권만기일_dt_alert'] = pd.to_datetime(
-                df_customers_for_alert_view.get('만기').astype(str).str.strip(),
-                errors='coerce'
-            )
+                df_customers_for_alert_view.get('만기')
+                    .astype(str)
+                    .str.replace(".", "-")
+                    .str.slice(0, 10),
+                format="%Y-%m-%d",
+                errors="coerce",
+            )   
             today_ts = pd.Timestamp.today().normalize()
             passport_alert_limit_date = today_ts + pd.DateOffset(months=6)
             passport_alerts_df = df_customers_for_alert_view[
