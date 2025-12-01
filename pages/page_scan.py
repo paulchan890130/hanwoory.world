@@ -912,6 +912,9 @@ def render():
     # -----------------------------
     # 확인/수정 폼
     # -----------------------------
+    if "scan_연" not in st.session_state or not str(st.session_state["scan_연"]).strip():
+        st.session_state["scan_연"] = "010"
+
     st.markdown("### 🔎 OCR 추출값 (필요 시 수정)")
     with st.form("scan_confirm_form"):
         c1, c2, c3 = st.columns(3)
@@ -933,10 +936,10 @@ def render():
 
         # 🔢 전화번호 + V 필드 (사람이 직접 입력/수정)
         p1, p2, p3, p4 = st.columns([1, 1, 1, 0.7])
-        연   = p1.text_input("연(앞 3자리)", key="scan_연",  placeholder="010")
-        락   = p2.text_input("락(중간 4자리)", key="scan_락", placeholder="")
-        처   = p3.text_input("처(끝 4자리)", key="scan_처",  placeholder="")
-        V    = p4.text_input("V", key="scan_V", placeholder="")
+        연   = p1.text_input("연(앞 3자리)", key="scan_연")
+        락   = p2.text_input("락(중간 4자리)", key="scan_락")
+        처   = p3.text_input("처(끝 4자리)", key="scan_처")
+        V    = p4.text_input("V", key="scan_V")
 
         submitted = st.form_submit_button("💾 고객관리 반영")
         if submitted:

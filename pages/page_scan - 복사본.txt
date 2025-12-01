@@ -128,27 +128,25 @@ def _pre(img):
     return g
 
 
-def ocr_try_all(img, langs=("kor", "kor+eng"), psms=(6, 7), pres=("raw", "binarize"), fast=None):
-    """디버그용 ‘베스트 OCR’ 탐색 (간이 버전).
-
-    - text 길이를 score로 사용.
-    - fast=True  이면 최소 조합만 사용 (1회 시도)
-    - fast=False 이면 langs×psms×pres 전체 조합 사용
-    - fast=None 이면 ARC_FAST_ONLY 값을 기본으로 사용
+def ocr_try_all(
+    img,
+    langs=("kor", "kor+eng"),
+    psms=(6, 7),
+    pres=("raw", "binarize"),
+    max_tries: int | None = None,
+):
     """
-    if fast is None:
-        fast = ARC_FAST_ONLY
-
+    디버그용 ‘베스트 OCR’ 탐색 (간이 버전).
+    - text 길이를 score로 사용.
+    - max_tries 가 None 이면: langs×psms×pres 모든 조합 시도 (기존과 동일)
+    - max_tries 가 1,2,... 이면: 앞에서부터 최대 그 횟수만 시도
+      (langs/psms/pres 값 자체는 그대로 유지하고, '조합 수'만 줄인다)
+    """
     best = {"text": "", "lang": None, "config": "", "pre": None, "score": -1}
     if pytesseract is None or img is None:
         return best
 
-    # 빠른 모드: 최소 조합만 사용
-    if fast:
-        langs = ("kor",)
-        psms = (6,)
-        pres = ("raw",)
-
+    tried = 0
     for lang in langs:
         for psm in psms:
             for pre in pres:
@@ -163,7 +161,14 @@ def ocr_try_all(img, langs=("kor", "kor+eng"), psms=(6, 7), pres=("raw", "binari
                 score = len(txt.strip())
                 if score > best["score"]:
                     best.update(text=txt, lang=lang, config=cfg, pre=pre, score=score)
+
+                tried += 1
+                if max_tries is not None and tried >= max_tries:
+                    # 빠른 모드일 때: 앞에서부터 max_tries개 조합만 시도
+                    return best
+
     return best
+
 
 
 def open_image_safe(uploaded_file):
@@ -279,31 +284,75 @@ def parse_passport(img):
     if img is None:
         return {}
 
+    # 🔹 성능 보호: 너무 큰 이미지는 한 변 최대 1600px 로 축소
+    max_side = 1600
+    w0, h0 = img.size
+    scale = max_side / float(max(w0, h0))
+    if scale < 1.0:
+        img = img.resize(
+            (int(w0 * scale), int(h0 * scale)),
+            resample=_PILImage.LANCZOS,
+        )
+
     w, h = img.size
     band = img.crop((0, int(h * 0.58), w, h))  # 하단 MRZ 영역
 
     texts = []
+
+    def _ocr_mrz_block(im):
+        """
+        MRZ 전용 OCR:
+        - 1차: ocrb+eng
+        - 2차: eng (ocrb 미설치/오류 대비)
+        psm 7, 6 두 번 시도
+        """
+        lines = []
+        cfg_common = "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ<0123456789"
+        for psm in (7, 6):
+            # 1차: ocrb+eng
+            txt = _ocr(im, lang="ocrb+eng", config=f"--oem 3 --psm {psm} {cfg_common}")
+            if txt.strip():
+                lines.append(txt)
+                continue
+
+            # 2차: eng (ocrb 없을 때용)
+            txt = _ocr(im, lang="eng", config=f"--oem 3 --psm {psm} {cfg_common}")
+            if txt.strip():
+                lines.append(txt)
+        return "\n".join(lines)
+
+    # 전처리 3종(부드러운 이진화, 기본 대비, 원본)을 각각 시도
     for pre in (_binarize_soft, _pre, lambda x: x):
         try:
             im = pre(band)
         except Exception:
             im = band
-        t7 = _ocr(
-            im,
-            lang="ocrb+eng",
-            config="--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ<0123456789",
-        ) or ""
-        t6 = _ocr(
-            im,
-            lang="ocrb+eng",
-            config="--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ<0123456789",
-        ) or ""
-        texts.append(t7 + "\n" + t6)
+        block_txt = _ocr_mrz_block(im)
+        if block_txt.strip():
+            texts.append(block_txt)
 
-    joined = "\n".join(t for t in texts if t)
-    L1, L2 = find_mrz_pair_from_text(joined)
-    if not L1 or not L2:
+    joined = "\n".join(t for t in texts if t.strip())
+    if not joined:
+        # MRZ 후보 자체가 안 나오면 그냥 포기
         return {}
+
+    # 1차: 기존 TD3 검증 로직으로 MRZ 2줄 찾기
+    L1, L2 = find_mrz_pair_from_text(joined)
+
+    # 2차: 그래도 못 찾으면 '<'가 많이 들어간 줄 두 개를 강제로 선택
+    if not L1 or not L2:
+        lines = [l for l in joined.splitlines() if l.strip()]
+        scored = []
+        for l in lines:
+            score = l.count('<') + sum(c.isdigit() for c in l)
+            if score >= 10:  # MRZ 느낌 나는 줄만
+                scored.append((score, _normalize_mrz_line(l)))
+        scored.sort(key=lambda x: x[0])
+        if len(scored) >= 2:
+            L1 = scored[-2][1]
+            L2 = scored[-1][1]
+        else:
+            return {}
 
     out = _parse_mrz_pair(L1, L2)
     return {
@@ -314,6 +363,7 @@ def parse_passport(img):
         "만기":     out.get("만기", ""),
         "생년월일": out.get("생년월일", ""),
     }
+
 
 # 등록증(ARC) 관련 보조 정규식/함수들 (사용하던 버전 그대로)
 _ADDR_BAN_RE = re.compile(
@@ -375,9 +425,15 @@ def _extract_kor_name_strict(text: str) -> str:
 def _kor_count(s: str) -> int:
     return len(re.findall(r'[가-힣]', s or ''))
 
-def parse_arc(img, fast=True):
+def parse_arc(img, fast: bool = False):
     """
-    등록증 이미지 파서 (기존 코드와 동일 동작을 유지하려고 최대한 유지).
+    등록증 이미지 파서.
+    - fast=True  이면:
+        * 등록증 전체 이미지를 한 변 최대 1600px로 리사이즈
+        * 상단 OCR 시 ocr_try_all 을 최대 2회까지만 시도
+    - fast=False 이면:
+        * 리사이즈 없이 원본 크기
+        * ocr_try_all 이 langs×psms×pres 전체 조합을 모두 시도 (기존과 동일)
     반환값 예:
     {'한글','등록증','번호','발급일','만기일','주소'}
     """
@@ -385,21 +441,27 @@ def parse_arc(img, fast=True):
     if img is None:
         return out
 
-    # 빠른 모드: 전체 이미지를 먼저 리사이즈(최대 한 변 1600px)
-    if fast and img is not None:
+    # 🔹 FAST 모드일 때만: 등록증 이미지 리사이즈 (한 변 최대 1600px)
+    if fast:
         max_side = 1600
         w0, h0 = img.size
         scale = max_side / float(max(w0, h0))
         if scale < 1.0:
-            img = img.resize((int(w0 * scale), int(h0 * scale)), resample=_PILImage.Resampling.LANCZOS)
+            img = img.resize(
+                (int(w0 * scale), int(h0 * scale)),
+                resample=_PILImage.LANCZOS,
+            )
 
+    # 리사이즈 반영된 크기로 상·하단 분리
     w, h = img.size
     top = img.crop((0, 0, w, int(h*0.5)))
     bot = img.crop((0, int(h*0.5), w, h))
 
     # 상단: 기본 OCR
     try:
-        t_top = ocr_try_all(top, langs=("kor","kor+eng"), fast=fast)["text"]
+        # FAST 모드면: 앞 조합 2개까지만 시도, 아니면 전체 조합
+        max_tries = 2 if fast else None
+        t_top = ocr_try_all(top, langs=("kor","kor+eng"), max_tries=max_tries)["text"]
     except Exception:
         t_top = ""
     tn_top = t_top
@@ -431,7 +493,7 @@ def parse_arc(img, fast=True):
                 best7 = candidates7[0]
             out["번호"] = best7.group(1)
 
-    # 3차: 숫자 덩어리에서 강제 분할 (13자리 → 6+7)
+        # 3차: 숫자 덩어리에서 강제 분할 (13자리 → 6+7)
     if not out.get("번호"):
         for m in re.finditer(r'\d{11,14}', t_dense):
             s = m.group(0)
@@ -693,6 +755,16 @@ def render():
         help="체크하면 원문/베스트OCR/파싱결과/테서랙트 진단을 표시합니다. (속도 저하)"
     )
 
+    # 등록증 FAST 모드 (기본 ON)
+    fast_arc = st.checkbox(
+        "⚡ 등록증 빠른 모드 (리사이즈 + OCR 최대 2회)",
+        value=True,
+        help=(
+            "체크 시: 등록증 이미지를 적당히 줄이고, 상단 OCR 조합을 앞에서부터 최대 2번까지만 시도합니다. "
+            "해제 시: 이미지를 원본 크기로 두고, langs/psm/전처리 모든 조합을 시도해 인식률을 최대화합니다."
+        ),
+    )
+
     # Tesseract 점검
     if not _ensure_tesseract():
         st.error("pytesseract가 감지되지 않았습니다. `Tesseract-OCR` 설치 및 환경설정을 확인하세요.")
@@ -734,9 +806,11 @@ def render():
     if arc_file:
         img_a = open_image_safe(arc_file)
         st.image(img_a, caption="등록증/스티커", use_container_width=True)
-        parsed_arc = parse_arc(img_a)
+        # 🔹 FAST 모드 on/off 에 따라 등록증 파싱 전략 변경
+        parsed_arc = parse_arc(img_a, fast=fast_arc)
     else:
         img_a = None
+
 
     # 여권 생년월일을 등록증 앞자리(YYMMDD)에 우선 반영
     try:
