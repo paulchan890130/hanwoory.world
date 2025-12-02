@@ -226,15 +226,18 @@ def render():
     with st.expander("✏️ 새 글 작성", expanded=(len(posts) == 0)):
         col1, col2 = st.columns([3, 1])
         with col1:
-            new_title = st.text_input("제목", key="board_new_title")
+            # key 제거
+            new_title = st.text_input("제목")
         with col2:
-            new_category = st.text_input("분류", value="자유", key="board_new_category")
+            # key 제거
+            new_category = st.text_input("분류", value="자유")
             if is_admin:
                 new_is_notice = st.checkbox("🔔 공지로 등록", key="board_new_is_notice")
             else:
                 new_is_notice = False
 
-        new_content = st.text_area("내용", height=200, key="board_new_content")
+        # key 제거
+        new_content = st.text_area("내용", height=200)
 
         if st.button("등록", key="board_new_submit", use_container_width=True):
             if not username:
@@ -259,11 +262,10 @@ def render():
                 }
                 if _append_board_post(rec):
                     st.success("게시글이 등록되었습니다.")
-
-                    # ✅ 입력창 비우기
-                    st.session_state["board_new_title"] = ""
-                    st.session_state["board_new_category"] = "자유"
-                    st.session_state["board_new_content"] = ""
+                    # 🔻 여기서 session_state 초기화 코드 전체 삭제
+                    # st.session_state["board_new_title"] = ""
+                    # st.session_state["board_new_category"] = "자유"
+                    # st.session_state["board_new_content"] = ""
 
                     st.session_state[SESS_BOARD_SELECTED_ID] = rec["id"]
                     st.session_state[SESS_BOARD_EDIT_MODE] = False
@@ -568,7 +570,7 @@ def render():
     new_comment = st.text_area(
         "새 댓글",
         height=120,
-        key="board_new_comment",
+        # key 제거
     )
     if st.button("💬 댓글 등록", key="board_new_comment_submit", use_container_width=True):
         if not username:
@@ -578,10 +580,8 @@ def render():
         else:
             if add_comment(selected_post["id"], tenant_id, username, office_name, new_comment):
                 st.success("댓글이 등록되었습니다.")
-
-                # ✅ 댓글 입력창 비우기
-                st.session_state["board_new_comment"] = ""
-
+                # 🔻 세션 값 직접 초기화하는 코드 제거
+                # st.session_state["board_new_comment"] = ""
                 st.session_state[SESS_BOARD_COMMENT_EDIT_ID] = None
                 st.rerun()
             else:
