@@ -79,6 +79,9 @@ EVENTS_SHEET_NAME          = "일정"
 MEMO_LONG_SHEET_NAME       = "장기메모"
 MEMO_MID_SHEET_NAME        = "중기메모"
 MEMO_SHORT_SHEET_NAME      = "단기메모"
+BOARD_SHEET_NAME           = "게시판"
+BOARD_COMMENT_SHEET_NAME   = "게시판댓글"
+
 
 # ===== Session Keys =====
 SESS_CURRENT_PAGE = 'current_page'
@@ -115,7 +118,7 @@ PAGE_DOCUMENT = 'document'
 PAGE_COMPLETED = 'completed'
 PAGE_SCAN = 'scan'
 PAGE_ADMIN_ACCOUNTS = 'admin_accounts'
-
+PAGE_BOARD = 'board'
 
 # ===== 공용 헬퍼 =====
 def safe_int(val):

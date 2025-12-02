@@ -93,7 +93,8 @@ from config import (
     PAGE_DOCUMENT,
     PAGE_COMPLETED,
     PAGE_SCAN,
-    PAGE_ADMIN_ACCOUNTS,    # 🔹 추가
+    PAGE_ADMIN_ACCOUNTS,
+    PAGE_BOARD,
 
     # ===== 공용 함수 =====
     safe_int,
@@ -886,6 +887,7 @@ if st:
             "👥 고객관리": PAGE_CUSTOMER,
             "📊 결산": PAGE_DAILY,
             "🧭 메뉴얼 검색": PAGE_MANUAL,
+            "📢 게시판": PAGE_BOARD,
         }
 
         if st.session_state.get(SESS_IS_ADMIN, False):
@@ -948,6 +950,11 @@ if st:
     # -----------------------------
     elif current_page_to_display == PAGE_MEMO:
         render_memo_page()
+
+    # ✅ Board Page (게시판)
+    elif current_page_to_display == PAGE_BOARD:
+        from pages import page_board
+        page_board.render()
 
     # -----------------------------
     # ✅ Document Automation Page (수정된 부분)
