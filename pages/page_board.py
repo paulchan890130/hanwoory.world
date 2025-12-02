@@ -1,6 +1,7 @@
 import datetime
 import uuid
 from typing import List, Dict, Optional
+import html
 
 import streamlit as st
 
@@ -258,12 +259,19 @@ def render():
                 }
                 if _append_board_post(rec):
                     st.success("게시글이 등록되었습니다.")
+
+                    # ✅ 입력창 비우기
+                    st.session_state["board_new_title"] = ""
+                    st.session_state["board_new_category"] = "자유"
+                    st.session_state["board_new_content"] = ""
+
                     st.session_state[SESS_BOARD_SELECTED_ID] = rec["id"]
                     st.session_state[SESS_BOARD_EDIT_MODE] = False
                     st.session_state[SESS_BOARD_COMMENT_EDIT_ID] = None
                     st.rerun()
                 else:
                     st.error("게시글 저장 중 오류가 발생했습니다.")
+
 
     st.markdown("---")
 
@@ -370,13 +378,28 @@ def render():
             st.markdown(f"**수정일:** {selected_post.get('updated_at')}")
 
         st.markdown("---")
-        st.text_area(
-            "내용",
-            selected_post.get("content", ""),
-            height=250,
-            disabled=True,
-            key="board_view_content",
+        # 내용이 숫자여도 항상 문자열로 취급
+        content = selected_post.get("content", "")
+        content = "" if content is None else str(content)
+
+        st.markdown("**내용**")
+
+        safe_content = html.escape(content)
+        st.markdown(
+            f"""
+            <div style="
+                border: 1px solid #666;
+                border-radius: 4px;
+                padding: 8px;
+                white-space: pre-wrap;
+                font-size: 0.95rem;
+            ">
+                {safe_content}
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
+
 
         btn_cols = st.columns(3)
         with btn_cols[0]:
@@ -555,6 +578,10 @@ def render():
         else:
             if add_comment(selected_post["id"], tenant_id, username, office_name, new_comment):
                 st.success("댓글이 등록되었습니다.")
+
+                # ✅ 댓글 입력창 비우기
+                st.session_state["board_new_comment"] = ""
+
                 st.session_state[SESS_BOARD_COMMENT_EDIT_ID] = None
                 st.rerun()
             else:
