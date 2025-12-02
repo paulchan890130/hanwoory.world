@@ -4,7 +4,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 # 도장 생성용 기본 설정값
 circle_path = "templates/원형 배경.png"
-font_path   = "Fonts/HJ한전서B.ttf"
+font_path   = "fonts/HJ한전서B.ttf"
 seal_size   = 200
 
 

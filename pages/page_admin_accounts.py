@@ -18,14 +18,18 @@ ACCOUNT_BASE_COLUMNS = [
     "password_hash",
     "tenant_id",
     "office_name",
+    "office_adr",       # ✅ 사무실 주소
     "contact_name",
     "contact_tel",
+    "biz_reg_no",
+    "agent_rrn",
     "is_admin",
     "is_active",
     "folder_id",
     "work_sheet_key",
     "customer_sheet_key",
     "created_at",
+    "sheet_key",        # 테넌트 전체 스프레드시트 키(필요시)
 ]
 
 # ---- 비밀번호 해시 유틸 ----
@@ -127,20 +131,36 @@ def render():
             st.markdown("#### 기본 정보")
 
             new_office_name = st.text_input(
-                "사무소 이름",
+                "대행기관명 (사무실명)",
                 value=str(row.get("office_name", "")),
             )
+            new_office_adr = st.text_input(
+                "사무실 주소",
+                value=str(row.get("office_adr", "")),
+            )
+
             new_tenant_id = st.text_input(
                 "테넌트 ID (빈칸이면 login_id와 동일)",
                 value=str(row.get("tenant_id", "")),
             )
 
+            new_biz_reg_no = st.text_input(
+                "사업자등록번호",
+                value=str(row.get("biz_reg_no", "")),
+                placeholder="000-00-00000",
+            )
+            new_agent_rrn = st.text_input(
+                "행정사 주민등록번호",
+                value=str(row.get("agent_rrn", "")),
+                placeholder="000000-0000000",
+            )
+
             new_contact_name = st.text_input(
-                "담당자 이름",
+                "행정사 성명",
                 value=str(row.get("contact_name", "")),
             )
             new_contact_tel = st.text_input(
-                "담당자 연락처",
+                "연락처 (전화번호)",
                 value=str(row.get("contact_tel", "")),
             )
 
@@ -186,9 +206,12 @@ def render():
 
             if st.button("💾 변경 사항 저장", type="primary"):
                 df.at[idx, "office_name"] = new_office_name or selected_id
+                df.at[idx, "office_adr"]   = new_office_adr
                 df.at[idx, "tenant_id"] = new_tenant_id or selected_id
                 df.at[idx, "contact_name"] = new_contact_name
                 df.at[idx, "contact_tel"] = new_contact_tel
+                df.at[idx, "biz_reg_no"] = new_biz_reg_no
+                df.at[idx, "agent_rrn"] = new_agent_rrn
                 df.at[idx, "is_admin"] = "TRUE" if new_is_admin else "FALSE"
                 df.at[idx, "is_active"] = "TRUE" if new_is_active else "FALSE"
 
@@ -234,9 +257,13 @@ def render():
         with st.form("create_account_form"):
             login_id = st.text_input("로그인 ID", placeholder="예: seoul_office")
             raw_pw = st.text_input("초기 비밀번호", type="password")
-            office_name = st.text_input("사무소 이름", placeholder="예: 서울 출입국 행정사")
-            contact_name = st.text_input("담당자 이름", placeholder="선택 입력")
-            contact_tel = st.text_input("담당자 연락처", placeholder="선택 입력")
+
+            office_name = st.text_input("대행기관명 (사무실명)", placeholder="예: 서울 출입국 행정사")
+            biz_reg_no = st.text_input("사업자등록번호", placeholder="000-00-00000")
+            agent_rrn = st.text_input("행정사 주민등록번호", placeholder="000000-0000000")
+
+            contact_name = st.text_input("행정사 성명", placeholder="선택 입력")
+            contact_tel = st.text_input("연락처 (전화번호)", placeholder="선택 입력")
 
             tenant_id = st.text_input(
                 "테넌트 ID (빈칸이면 login_id와 동일)",
@@ -288,6 +315,8 @@ def render():
                         "office_name": office_name or tid,
                         "contact_name": contact_name,
                         "contact_tel": contact_tel,
+                        "biz_reg_no": biz_reg_no,
+                        "agent_rrn": agent_rrn,
                         "is_admin": "TRUE" if is_admin else "FALSE",
                         "is_active": "TRUE" if is_active else "FALSE",
                         "folder_id": folder_id,
@@ -295,6 +324,7 @@ def render():
                         "customer_sheet_key": customer_sheet_key,
                         "created_at": pd.Timestamp.today().strftime("%Y-%m-%d"),
                     }
+
 
                     # 기존 df에 컬럼이 있다면 맞춰주기
                     for col in df.columns:

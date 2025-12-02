@@ -306,6 +306,9 @@ def create_office_account_via_signup(
     office_name: str,
     contact_name: str = "",
     contact_tel: str = "",
+    biz_reg_no: str = "",
+    agent_rrn: str = "",
+    office_adr: str = "",
 ):
     """
     일반 사무실에서 회원가입 탭을 통해 계정 신청할 때 호출.
@@ -316,6 +319,8 @@ def create_office_account_via_signup(
     """
     login_id = (login_id or "").strip()
     office_name = (office_name or "").strip()
+    biz_reg_no = (biz_reg_no or "").strip()
+    agent_rrn = (agent_rrn or "").strip()
 
     if not login_id:
         raise ValueError("로그인 ID가 비어 있습니다.")
@@ -345,6 +350,8 @@ def create_office_account_via_signup(
             "office_name",
             "contact_name",
             "contact_tel",
+            "biz_reg_no",
+            "agent_rrn",
             "is_admin",
             "is_active",
             "folder_id",
@@ -367,7 +374,13 @@ def create_office_account_via_signup(
         new_rec["contact_name"] = contact_name
     if "contact_tel" in new_rec:
         new_rec["contact_tel"] = contact_tel
-
+    if "biz_reg_no" in new_rec:
+        new_rec["biz_reg_no"] = biz_reg_no
+    if "office_adr" in new_rec:
+        new_rec["office_adr"] = office_adr
+    if "agent_rrn" in new_rec:
+        new_rec["agent_rrn"] = agent_rrn
+        
     if "is_admin" in new_rec:
         new_rec["is_admin"] = "FALSE"
     if "is_active" in new_rec:
@@ -535,12 +548,29 @@ def load_planned_tasks_from_sheet():
         'note': str(r.get('note',''))
     } for r in records]
 
-def save_planned_tasks_to_sheet(data_list_of_dicts): 
+def save_planned_tasks_to_sheet(tenant_id, data_list_of_dicts):
+    """
+    예정업무: 전체 덮어쓰기 대신, id 기준 upsert
+    """
+    sheet_key = get_sheet_key_for_tenant(tenant_id)
     header = ['id', 'date', 'period', 'content', 'note']
-    if write_data_to_sheet(PLANNED_TASKS_SHEET_NAME, data_list_of_dicts, header_list=header):
+
+    # string 변환(넣기 전에 정리)
+    normalized = []
+    for r in data_list_of_dicts:
+        rec = {}
+        for col in header:
+            rec[col] = "" if r.get(col) is None else str(r.get(col))
+        normalized.append(rec)
+
+    ok = upsert_rows_by_id(sheet_key, PLANNED_TASKS_SHEET_NAME,
+                           header_list=header,
+                           records=normalized,
+                           id_field="id")
+    if ok:
         load_planned_tasks_from_sheet.clear()
-        return True
-    return False
+    return ok
+
 
 # --- Active Task Functions ---
 @st.cache_data(ttl=300)
@@ -558,15 +588,26 @@ def load_active_tasks_from_sheet():
         'processed_timestamp': str(r.get('processed_timestamp', '')) # Store as string, parse if needed
     } for r in records]
 
-def save_active_tasks_to_sheet(data_list_of_dicts): 
-    # 헤더 정의
-    header = ['id', 'category', 'date', 'name', 'work',
-              'source_original', 'details', 'processed', 'processed_timestamp']
-    # 전역 write_data_to_sheet 함수 호출
-    success = write_data_to_sheet(ACTIVE_TASKS_SHEET_NAME, data_list_of_dicts, header)
-    if success:
+def save_active_tasks_to_sheet(tenant_id, data_list_of_dicts):
+    header = [
+        'id', 'category', 'date', 'name', 'work',
+        'source_original', 'details', 'processed', 'processed_timestamp'
+    ]
+    sheet_key = get_sheet_key_for_tenant(tenant_id)
+    normalized = []
+    for r in data_list_of_dicts:
+        rec = {}
+        for col in header:
+            rec[col] = "" if r.get(col) is None else str(r.get(col))
+        normalized.append(rec)
+
+    ok = upsert_rows_by_id(sheet_key, ACTIVE_TASKS_SHEET_NAME,
+                           header_list=header,
+                           records=normalized,
+                           id_field="id")
+    if ok:
         load_active_tasks_from_sheet.clear()
-    return success
+    return ok
 
 # --- Completed Task Functions ---
 @st.cache_data(ttl=300) # Added cache
@@ -584,12 +625,24 @@ def load_completed_tasks_from_sheet(): # Renamed
         'complete_date': str(r.get('complete_date', ''))
     } for r in records]
 
-def save_completed_tasks_to_sheet(records): # Renamed
-    header = ['id', 'category', 'date', 'name', 'work', 'source_original', 'details', 'complete_date']
-    if write_data_to_sheet(COMPLETED_TASKS_SHEET_NAME, records, header_list=header):
+def save_completed_tasks_to_sheet(tenant_id, records):
+    header = ['id', 'category', 'date', 'name', 'work',
+              'source_original', 'details', 'complete_date']
+    sheet_key = get_sheet_key_for_tenant(tenant_id)
+    normalized = []
+    for r in records:
+        rec = {}
+        for col in header:
+            rec[col] = "" if r.get(col) is None else str(r.get(col))
+        normalized.append(rec)
+
+    ok = upsert_rows_by_id(sheet_key, COMPLETED_TASKS_SHEET_NAME,
+                           header_list=header,
+                           records=normalized,
+                           id_field="id")
+    if ok:
         load_completed_tasks_from_sheet.clear()
-        return True
-    return False
+    return ok
 
 # -----------------------------
 # ✅ Streamlit App Logic
@@ -702,15 +755,38 @@ if st:
 
             st.markdown(
                 "- 이 화면은 **새로운 행정사 사무소**가 K.ID 업무관리 시스템을 사용하기 위해 계정을 신청하는 용도입니다.<br>"
-                "- 가입 후에는 관리자가 승인을 해야 로그인 가능합니다.",
+                "- 가입 후에는 관리자가 승인을 해야 로그인 가능합니다.<br>"
+                "- 사업자등록번호 및 주민등록번호 등 개인정보는 문서작성 자동화 시스템에서 대리인 정보를 자동 기입하기 위해 사용하는 것으로, 해당 기능을 사용하지 않는 경우 입력하지 않으셔도 무방합니다.",
                 unsafe_allow_html=True,
             )
 
             with st.form("signup_form"):
-                office_name  = st.text_input("사무실 이름 *")
+                # 1) 대행기관명 (사무실명)
+                office_name  = st.text_input("대행기관명 (사무실명) *")
+                office_adr   = st.text_input("사무실 주소")
+
+                # 2) 사업자등록번호 (샘플은 음영으로 보이도록 placeholder)
+                biz_reg_no   = st.text_input(
+                    "사업자등록번호",
+                    placeholder="000-00-00000",
+                )
+
+                # 3) 행정사 주민등록번호 (필요시만 입력)
+                agent_rrn    = st.text_input(
+                    "행정사 주민등록번호",
+                    placeholder="000000-0000000",
+                )
+
+                # 4) 행정사 성명 / 연락처
+                contact_name = st.text_input("행정사 성명", value="")
+                contact_tel  = st.text_input(
+                    "연락처 (전화번호)",
+                    value="",
+                    placeholder="010-0000-0000",
+                )
+
+                # 5) 로그인 ID / 비밀번호
                 login_id_new = st.text_input("로그인 ID (영문/숫자 권장) *")
-                contact_name = st.text_input("담당자 이름", value="")
-                contact_tel  = st.text_input("연락처 (전화번호 등)", value="")
                 pw1 = st.text_input("비밀번호 *", type="password")
                 pw2 = st.text_input("비밀번호 확인 *", type="password")
 
@@ -738,6 +814,9 @@ if st:
                             office_name=office_name,
                             contact_name=contact_name,
                             contact_tel=contact_tel,
+                            biz_reg_no=biz_reg_no,
+                            agent_rrn=agent_rrn,
+                            office_adr=office_adr,
                         )
                         st.session_state["signup_message"] = (
                             "가입신청이 완료되었습니다. 본 프로그램은 정식 영업중인 행정사를 위한 프로그램으로 "

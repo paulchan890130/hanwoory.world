@@ -15,6 +15,7 @@ from config import (
     SHEET_KEY,
     DEFAULT_TENANT_ID,
     SESS_TENANT_ID,
+    SESS_USERNAME,
     PARENT_DRIVE_FOLDER_ID,
     CUSTOMER_DATA_TEMPLATE_ID,
     WORK_REFERENCE_TEMPLATE_ID,
@@ -540,6 +541,131 @@ def write_data_to_sheet(sheet_name: str, records: list[dict], header_list: list[
         st.error(f"❌ write_data_to_sheet 오류 ({sheet_name}): {e}")
         return False
 
+def upsert_rows_by_id(sheet_key: str, sheet_name: str,
+                      header_list: list[str],
+                      records: list[dict],
+                      id_field: str = "id") -> bool:
+    """
+    - sheet_name 시트에 대해
+      * id_field 기준으로 기존 행은 UPDATE
+      * 시트에 없는 id는 APPEND
+    - records: 프론트에서 올라온 dict 리스트
+    - 삭제는 여기서 처리하지 않음 (별도 삭제 로직으로 다루는 게 안전)
+    """
+    try:
+        client = get_gspread_client()
+        ws = get_worksheet(sheet_key, sheet_name)
+
+        # 1) 현재 시트 전체 값 가져오기
+        values = ws.get_all_values()  # [ [col1, col2, ...], [...], ... ]
+        if not values:
+            # 시트가 비어있으면: 헤더 + records 전체를 한 번에 올린다.
+            all_rows = [header_list]
+            for rec in records:
+                row = [str(rec.get(col, "")) for col in header_list]
+                all_rows.append(row)
+            ws.update(f"A1:{col_index_to_letter(len(header_list))}{len(all_rows)}", all_rows)
+            return True
+
+        header = values[0]
+        data_rows = values[1:]
+
+        # 헤더에 id_field가 없으면 일단 헤더부터 맞춘다.
+        if id_field not in header:
+            header = header_list  # 강제로 맞추고
+            # 기존 데이터는 버리고, 전체 다시 쓰는 쪽을 선택해도 됨.
+            # (필요하면 여기 로직 더 정교하게)
+            all_rows = [header_list]
+            for rec in records:
+                row = [str(rec.get(col, "")) for col in header_list]
+                all_rows.append(row)
+            ws.clear()
+            ws.update(f"A1:{col_index_to_letter(len(header_list))}{len(all_rows)}", all_rows)
+            return True
+
+        # 2) 기존 시트를 id -> (row_index, row_dict)로 매핑
+        col_idx = {c: i for i, c in enumerate(header)}
+        id_col_idx = col_idx[id_field]
+
+        existing_by_id = {}
+        for idx, row_vals in enumerate(data_rows, start=2):  # 2행부터 데이터
+            if id_col_idx < len(row_vals):
+                rid = row_vals[id_col_idx]
+            else:
+                rid = ""
+            if not rid:
+                continue
+            row_dict = {}
+            for col_name, c_idx in col_idx.items():
+                row_dict[col_name] = row_vals[c_idx] if c_idx < len(row_vals) else ""
+            existing_by_id[rid] = (idx, row_dict)
+
+        # 3) records 를 id 기준으로 upsert
+        updates = []      # (row_index, {col_name: value})
+        append_rows = []  # [[...], [...], ...]
+
+        for rec in records:
+            rid = str(rec.get(id_field, "")).strip()
+            # id가 비어 있으면 "신규"로 append
+            if not rid or rid not in existing_by_id:
+                append_rows.append([str(rec.get(col, "")) for col in header_list])
+                continue
+
+            # 기존 행과 비교해서 바뀐 컬럼만 UPDATE 대상에 넣기
+            row_index, old_row = existing_by_id[rid]
+            changed_cols = {}
+            for col in header_list:
+                new_val = str(rec.get(col, ""))
+                old_val = str(old_row.get(col, ""))
+                if new_val != old_val:
+                    changed_cols[col] = new_val
+            if changed_cols:
+                updates.append((row_index, changed_cols))
+
+        # 4) batch_update (부분 update)
+        batch_body = {"requests": []}
+
+        for row_index, changed_cols in updates:
+            for col_name, value in changed_cols.items():
+                c_idx = col_idx.get(col_name)
+                if c_idx is None:
+                    continue
+                col_letter = col_index_to_letter(c_idx + 1)
+                cell_range = f"{col_letter}{row_index}"
+                batch_body["requests"].append(
+                    {
+                        "updateCells": {
+                            "range": {
+                                "sheetId": ws.id,
+                                "startRowIndex": row_index - 1,
+                                "endRowIndex": row_index,
+                                "startColumnIndex": c_idx,
+                                "endColumnIndex": c_idx + 1,
+                            },
+                            "rows": [{
+                                "values": [{
+                                    "userEnteredValue": {"stringValue": value}
+                                }]
+                            }],
+                            "fields": "userEnteredValue",
+                        }
+                    }
+                )
+
+        if batch_body["requests"]:
+            ws.spreadsheet.batch_update(batch_body)
+
+        # 5) append_rows
+        if append_rows:
+            ws.append_rows(append_rows, value_input_option="USER_ENTERED")
+
+        return True
+
+    except Exception as e:
+        print("upsert_rows_by_id error:", e)
+        return False
+
+
 def append_rows_to_sheet(sheet_name: str, records: list[dict], header_list: list[str]) -> bool:
     """
     신규 레코드만 Google Sheet에 append 합니다.
@@ -596,3 +722,43 @@ def save_memo_to_sheet(sheet_name: str, content: str) -> bool:
             st.error(f"'{sheet_name}' 시트 (메모) 저장 중 오류 발생: {e}")
             return False
     return False
+
+def get_current_account_row():
+    """
+    현재 로그인한 계정(세션의 SESS_USERNAME)에 해당하는
+    Accounts 시트 한 행(dict)을 리턴.
+    없으면 None.
+    """
+    username = st.session_state.get(SESS_USERNAME, "")
+    if not username:
+        return None
+
+    records = read_data_from_sheet(ACCOUNTS_SHEET_NAME, default_if_empty=[]) or []
+    for r in records:
+        if str(r.get("login_id", "")).strip() == username.strip():
+            return r
+    return None
+
+
+def get_current_agent_info():
+    """
+    문서자동작성에서 쓰기 좋은 형태로 행정사 정보를 정리해서 반환.
+    - office_name: 사무실명(대행기관명)
+    - office_adr : 사무실 주소
+    - agent_name : 행정사 성명
+    - agent_tel  : 행정사 연락처
+    - biz_reg_no : 사업자등록번호
+    - agent_rrn  : 행정사 주민등록번호
+    """
+    acc = get_current_account_row()
+    if acc is None:
+        return {}
+
+    return {
+        "office_name":  acc.get("office_name", ""),
+        "office_adr":   acc.get("office_adr", ""),
+        "agent_name":   acc.get("contact_name", ""),
+        "agent_tel":    acc.get("contact_tel", ""),
+        "biz_reg_no":   acc.get("biz_reg_no", ""),
+        "agent_rrn":    acc.get("agent_rrn", ""),
+    }
