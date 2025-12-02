@@ -672,186 +672,289 @@ def render():
     if "selected_docs_for_generate" not in st.session_state:
         st.session_state["selected_docs_for_generate"] = []
 
-    # ── 1단계: 업무 분류 선택 (구분/민원/종류/세부) ──
-    cols_top = st.columns(4)
-    with cols_top[0]:
+    # ── 선택 / 필요서류 / 검색: 3단 세로 그룹 (가로 비율 1:1:3) ──
+    col_sel, col_docs, col_search = st.columns([1, 1, 3])
+
+    # 1) 왼쪽: 선택 항 (구분 / 민원 / 종류 / 추가선택)
+    with col_sel:
+        st.markdown("#### 1. 선택 항")
+
         category = st.selectbox("구분", CATEGORY_OPTIONS, key="doc_category")
 
-    with cols_top[1]:
         minwon_options = MINWON_OPTIONS.get(category, [])
         minwon = st.selectbox("민원", minwon_options, key="doc_minwon")
 
-    with cols_top[2]:
         tkey = (category, minwon)
         type_options = TYPE_OPTIONS.get(tkey, [])
         kind = st.selectbox("종류", type_options, key="doc_kind") if type_options else ""
 
-    with cols_top[3]:
         skey = (category, minwon, kind or "x")
         subtype_options = SUBTYPE_OPTIONS.get(skey, [])
-        detail = st.selectbox("추가선택", subtype_options,
-                              key="doc_detail") if subtype_options else ""
-
-    key_tuple = (
-        normalize_step(category),
-        normalize_step(minwon),
-        normalize_step(kind),
-        normalize_step(detail),
-    )
-
-    st.markdown("---")
-
-    # ── 2단계: 사람 선택 (숙소제공자/신청인/대리인/신원보증인/합산자) ──
-    cols_people = st.columns(5)
-
-    prov = None
-    guardian = None
-    guarantor = None
-    aggregator = None
-    row = None
-
-    # 숙소제공자
-    with cols_people[0]:
-        숙소키워드 = st.text_input("숙소제공자 검색", key="doc_accommodation_search")
-    matched_provs = (
-        df_cust[df_cust["한글"].str.contains(숙소키워드.strip(), na=False)]
-        if 숙소키워드.strip()
-        else pd.DataFrame()
-    )
-    if not matched_provs.empty:
-        st.markdown("👀 **숙소제공자 검색 결과:**")
-        for idx2, prov_row in matched_provs.iterrows():
-            label2 = f"{prov_row['한글']} / {prov_row['등록증']} / {prov_row['연']}-{prov_row['락']}-{prov_row['처']}"
-            if st.button(label2, key=f"accom_{idx2}"):
-                st.session_state["selected_accommodation_idx"] = idx2
-                st.session_state["document_generated"] = False
-                st.rerun()
-    if "selected_accommodation_idx" in st.session_state:
-        prov = df_cust.loc[st.session_state["selected_accommodation_idx"]]
-        st.markdown(f"✅ 선택된 숙소제공자: **{prov['한글']}**")
-    apply_prov_seal = st.checkbox("숙소제공자 도장", value=True, key="chk_prov_seal")
-
-    # 신청인
-    with cols_people[1]:
-        applicant_kw = st.text_input("신청인 이름 (고객 검색)", key="doc_search")
-    matched = (
-        df_cust[df_cust["한글"].str.contains(applicant_kw.strip(), na=False)]
-        if applicant_kw.strip()
-        else pd.DataFrame()
-    )
-    if not matched.empty:
-        st.markdown("🔎 **신청인 검색 결과:**")
-        for idx, row_tmp in matched.iterrows():
-            label = f"{row_tmp['한글']} / {row_tmp['등록증']} / {row_tmp['연']}-{row_tmp['락']}-{row_tmp['처']}"
-            if st.button(label, key=f"select_{idx}"):
-                st.session_state["selected_customer_idx"] = idx
-                st.session_state["document_generated"] = False
-                st.rerun()
-    선택된_고객 = None
-    if "selected_customer_idx" in st.session_state:
-        row = df_cust.loc[st.session_state["selected_customer_idx"]]
-        선택된_고객 = row["한글"]
-        st.markdown(f"✅ 선택된 신청인: **{선택된_고객}**")
-    apply_applicant_seal = st.checkbox("신청인 도장", value=True, key="chk_applicant_seal")
-
-    # 미성년자 여부 + 대리인
-    is_minor = calc_is_minor(row.get("등록증", "")) if row is not None else False
-    if is_minor:
-        with cols_people[2]:
-            guardian_kw = st.text_input("대리인 이름 (고객 검색)", key="doc_guardian_search")
-        후보 = (
-            df_cust[df_cust["한글"].str.contains(guardian_kw.strip(), na=False)]
-            if guardian_kw.strip()
-            else pd.DataFrame()
+        detail = (
+            st.selectbox("추가선택", subtype_options, key="doc_detail")
+            if subtype_options
+            else ""
         )
-        if not 후보.empty:
-            st.markdown("👤 **대리인 검색 결과:**")
-            for _, row2 in 후보.iterrows():
-                cust_id = row2["고객ID"]
-                label3 = f"{row2['한글']} / {row2['등록증']} / {row2['연']}-{row2['락']}-{row2['처']}"
-                if st.button(label3, key=f"guardian_{cust_id}"):
-                    st.session_state["selected_guardian_idx"] = row2.name
-                    st.session_state["document_generated"] = False
-                    st.rerun()
-        if "selected_guardian_idx" in st.session_state:
-            guardian = df_cust.loc[st.session_state["selected_guardian_idx"]]
-            st.markdown(f"✅ 선택된 대리인: **{guardian['한글']}**")
-    apply_guardian_seal = st.checkbox("대리인 도장", value=True,
-                                      key="chk_guardian_seal") if is_minor else False
 
-    # 신원보증인
-    need_g = need_guarantor(*key_tuple)
-    if need_g:
-        with cols_people[3]:
-            guarantor_kw = st.text_input("신원보증인 검색", key="doc_guarantor_search")
-        matched_guars = (
-            df_cust[df_cust["한글"].str.contains(guarantor_kw.strip(), na=False)]
-            if guarantor_kw.strip()
-            else pd.DataFrame()
+        # 선택값 조합 키
+        key_tuple = (
+            normalize_step(category),
+            normalize_step(minwon),
+            normalize_step(kind),
+            normalize_step(detail),
         )
-        if not matched_guars.empty:
-            st.markdown("🔒 **신원보증인 검색 결과:**")
-            for _, grow in matched_guars.iterrows():
-                cust_id = grow["고객ID"]
-                lbl = f"{grow['한글']} / {grow['등록증']} / {grow['연']}-{grow['락']}-{grow['처']}"
-                if st.button(lbl, key=f"guarantor_{cust_id}"):
-                    st.session_state["selected_guarantor_idx"] = grow.name
-                    st.session_state["document_generated"] = False
-                    st.rerun()
-        if "selected_guarantor_idx" in st.session_state:
-            guarantor = df_cust.loc[st.session_state["selected_guarantor_idx"]]
-            st.markdown(f"✅ 선택된 신원보증인: **{guarantor['한글']}**")
-    apply_guarantor_seal = st.checkbox("신원보증인 도장", value=True,
-                                       key="chk_guarantor_seal") if need_g else False
 
-    # 합산자
-    need_a = need_aggregator(*key_tuple)
-    if need_a:
-        with cols_people[4]:
-            agg_kw = st.text_input("합산자 검색", key="doc_agg_search")
-        matched_agg = (
-            df_cust[df_cust["한글"].str.contains(agg_kw.strip(), na=False)]
-            if agg_kw.strip()
-            else pd.DataFrame()
-        )
-        if not matched_agg.empty:
-            st.markdown("📊 **합산자 검색 결과:**")
-            for _, arow in matched_agg.iterrows():
-                cust_id = arow["고객ID"]
-                lbl = f"{arow['한글']} / {arow['등록증']} / {arow['연']}-{arow['락']}-{arow['처']}"
-                if st.button(lbl, key=f"agg_{cust_id}"):
-                    st.session_state["selected_agg_idx"] = arow.name
-                    st.session_state["document_generated"] = False
-                    st.rerun()
-        if "selected_agg_idx" in st.session_state:
-            aggregator = df_cust.loc[st.session_state["selected_agg_idx"]]
-            st.markdown(f"✅ 선택된 합산자: **{aggregator['한글']}**")
-    apply_aggregator_seal = st.checkbox("합산자 도장", value=True,
-                                        key="chk_agg_seal") if need_a else False
+    # 2) 가운데: 필요서류 목록
+    with col_docs:
+        st.markdown("#### 2. 필요서류")
 
-    st.markdown("---")
-
-    # ── 3단계: 필요서류 목록 표시 + 체크박스 ──
-    docs_cfg = REQUIRED_DOCS.get(key_tuple)
-    selected_ids = set(st.session_state.get("selected_docs_for_generate", []))
-
-    if not docs_cfg:
-        st.info("선택한 조합에 대해 아직 필요서류 설정이 없습니다.")
+        docs_cfg = REQUIRED_DOCS.get(key_tuple)
+        selected_ids = set(st.session_state.get("selected_docs_for_generate", []))
         docs_list = []
-    else:
-        docs_list = docs_cfg["main"] + docs_cfg["agent"]
-        st.markdown("### 📄 필요서류 목록")
-        new_selected = []
-        for doc_name in docs_list:
-            checked = st.checkbox(
-                doc_name,
-                key=f"doc_{doc_name}",
-                value=(doc_name in selected_ids),
+
+        if not docs_cfg:
+            st.info("선택한 조합에 대해 아직 필요서류 설정이 없습니다.")
+        else:
+            docs_list = docs_cfg["main"] + docs_cfg["agent"]
+            new_selected = []
+            for doc_name in docs_list:
+                checked = st.checkbox(
+                    doc_name,
+                    key=f"doc_{doc_name}",
+                    value=(doc_name in selected_ids),
+                )
+                if checked:
+                    new_selected.append(doc_name)
+            st.session_state["selected_docs_for_generate"] = new_selected
+            selected_ids = set(new_selected)
+
+
+    # 3) 오른쪽: 검색 항
+    with col_search:
+        st.markdown("#### 3. 검색 항")
+
+        prov = None
+        guardian = None
+        guarantor = None
+        aggregator = None
+        row = None
+
+        # ✅ 라벨: 이름(생년월일) / 등록증 / 010-1234-5678
+        def format_label(r):
+            name = str(r.get("한글", "")).strip()
+            birth = str(r.get("등", "")).strip()  # YYMMDD
+            regno = str(r.get("등록증", "")).strip()
+
+            # 전화번호
+            p1 = str(r.get("연", "")).strip()
+            p2 = str(r.get("락", "")).strip()
+            p3 = str(r.get("처", "")).strip()
+            phone = "-".join([x for x in [p1, p2, p3] if x])  # 비어있는 건 빼고 조립
+
+            # 이름(생년월일)
+            if birth:
+                name_part = f"{name} ({birth})"
+            else:
+                name_part = name
+
+            parts = [name_part]
+            if regno:
+                parts.append(regno)
+            if phone:
+                parts.append(phone)
+
+            return " / ".join(parts)
+
+        # ── 신청인 ─────────────────────────────
+        st.markdown("##### 신청인")
+        b1, b2, b3 = st.columns([0.6, 1.2, 1.2])
+
+        with b1:
+            applicant_kw = st.text_input("검색", key="doc_search")
+
+        with b2:
+            matched = (
+                df_cust[df_cust["한글"].str.contains(applicant_kw.strip(), na=False)]
+                if applicant_kw.strip()
+                else pd.DataFrame()
             )
-            if checked:
-                new_selected.append(doc_name)
-        st.session_state["selected_docs_for_generate"] = new_selected
-        selected_ids = set(new_selected)
+            if not matched.empty:
+                for idx, row_tmp in matched.iterrows():
+                    label = format_label(row_tmp)
+                    if st.button(label, key=f"select_{idx}", use_container_width=True):
+                        st.session_state["selected_customer_idx"] = idx
+                        st.session_state["document_generated"] = False
+                        st.rerun()
+
+        with b3:
+            선택된_고객 = None
+            if "selected_customer_idx" in st.session_state:
+                row = df_cust.loc[st.session_state["selected_customer_idx"]]
+                선택된_고객 = format_label(row)
+                st.markdown(f"✅ {선택된_고객}")
+
+            apply_applicant_seal = st.checkbox(
+                "신청인 도장", value=True, key="chk_applicant_seal"
+            )
+
+        # ── 미성년자 여부 + 대리인 ─────────────────
+        is_minor = calc_is_minor(row.get("등록증", "")) if row is not None else False
+        if is_minor:
+            st.markdown("##### 대리인")
+            c1, c2, c3 = st.columns([0.6, 1.2, 1.2])
+
+            with c1:
+                guardian_kw = st.text_input("검색", key="doc_guardian_search")
+
+            with c2:
+                후보 = (
+                    df_cust[df_cust["한글"].str.contains(guardian_kw.strip(), na=False)]
+                    if guardian_kw.strip()
+                    else pd.DataFrame()
+                )
+                if not 후보.empty:
+                    for _, row2 in 후보.iterrows():
+                        cust_id = row2["고객ID"]
+                        label3 = format_label(row2)
+                        if st.button(
+                            label3,
+                            key=f"guardian_{cust_id}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["selected_guardian_idx"] = row2.name
+                            st.session_state["document_generated"] = False
+                            st.rerun()
+
+            with c3:
+                if "selected_guardian_idx" in st.session_state:
+                    guardian = df_cust.loc[st.session_state["selected_guardian_idx"]]
+                    st.markdown(f"✅ {format_label(guardian)}")
+
+                apply_guardian_seal = st.checkbox(
+                    "대리인 도장", value=True, key="chk_guardian_seal"
+                )
+        else:
+            guardian = None
+            apply_guardian_seal = False
+
+        # ── 숙소제공자 ───────────────────────────
+        st.markdown("##### 숙소제공자")
+        a1, a2, a3 = st.columns([0.6, 1.2, 1.2])
+
+        with a1:
+            숙소키워드 = st.text_input("검색", key="doc_accommodation_search")
+
+        with a2:
+            matched_provs = (
+                df_cust[df_cust["한글"].str.contains(숙소키워드.strip(), na=False)]
+                if 숙소키워드.strip()
+                else pd.DataFrame()
+            )
+            if not matched_provs.empty:
+                for idx2, prov_row in matched_provs.iterrows():
+                    label2 = format_label(prov_row)
+                    if st.button(
+                        label2, key=f"accom_{idx2}", use_container_width=True
+                    ):
+                        st.session_state["selected_accommodation_idx"] = idx2
+                        st.session_state["document_generated"] = False
+                        st.rerun()
+
+        with a3:
+            if "selected_accommodation_idx" in st.session_state:
+                prov = df_cust.loc[st.session_state["selected_accommodation_idx"]]
+                st.markdown(f"✅ {format_label(prov)}")
+
+            apply_prov_seal = st.checkbox(
+                "숙소제공자 도장", value=True, key="chk_prov_seal"
+            )
+
+        # ── 신원보증인 ───────────────────────────
+        need_g = need_guarantor(*key_tuple)
+        if need_g:
+            st.markdown("##### 신원보증인")
+            d1, d2, d3 = st.columns([0.6, 1.2, 1.2])
+
+            with d1:
+                guarantor_kw = st.text_input("검색", key="doc_guarantor_search")
+
+            with d2:
+                matched_guars = (
+                    df_cust[df_cust["한글"].str.contains(guarantor_kw.strip(), na=False)]
+                    if guarantor_kw.strip()
+                    else pd.DataFrame()
+                )
+                if not matched_guars.empty:
+                    for _, grow in matched_guars.iterrows():
+                        cust_id = grow["고객ID"]
+                        lbl = format_label(grow)
+                        if st.button(
+                            lbl,
+                            key=f"guarantor_{cust_id}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["selected_guarantor_idx"] = grow.name
+                            st.session_state["document_generated"] = False
+                            st.rerun()
+
+            with d3:
+                if "selected_guarantor_idx" in st.session_state:
+                    guarantor = df_cust.loc[st.session_state["selected_guarantor_idx"]]
+                    st.markdown(f"✅ {format_label(guarantor)}")
+
+                apply_guarantor_seal = st.checkbox(
+                    "신원보증인 도장", value=True, key="chk_guarantor_seal"
+                )
+        else:
+            guarantor = None
+            apply_guarantor_seal = False
+
+        # ── 합산자 ───────────────────────────────
+        need_a = need_aggregator(*key_tuple)
+        if need_a:
+            st.markdown("##### 합산자")
+            e1, e2, e3 = st.columns([0.6, 1.2, 1.2])
+
+            with e1:
+                agg_kw = st.text_input("이름 검색", key="doc_agg_search")
+
+            with e2:
+                matched_agg = (
+                    df_cust[df_cust["한글"].str.contains(agg_kw.strip(), na=False)]
+                    if agg_kw.strip()
+                    else pd.DataFrame()
+                )
+                if not matched_agg.empty:
+                    for _, arow in matched_agg.iterrows():
+                        cust_id = arow["고객ID"]
+                        lbl = format_label(arow)
+                        if st.button(
+                            lbl,
+                            key=f"agg_{cust_id}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["selected_agg_idx"] = arow.name
+                            st.session_state["document_generated"] = False
+                            st.rerun()
+
+            with e3:
+                if "selected_agg_idx" in st.session_state:
+                    aggregator = df_cust.loc[st.session_state["selected_agg_idx"]]
+                    st.markdown(f"✅ {format_label(aggregator)}")
+
+                apply_aggregator_seal = st.checkbox(
+                    "합산자 도장", value=True, key="chk_agg_seal"
+                )
+        else:
+            aggregator = None
+            apply_aggregator_seal = False
+
+        # ── 행정사 도장 ─────────────────────────
+        st.markdown("##### 행정사")
+        apply_agent_seal = st.checkbox(
+            "행정사 도장", value=True, key="chk_agent_seal"
+        )
+
 
     st.markdown("---")
 
@@ -920,7 +1023,7 @@ def render():
 
             # 행정사(위임장, 대행업무수행확인서용)
             "agent": make_seal_bytes(agent_seal_name)
-            if agent_seal_name
+            if (agent_seal_name and apply_agent_seal)
             else None,
         }
 
