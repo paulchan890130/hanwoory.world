@@ -14,30 +14,29 @@ from core.google_sheets import (
 
 
 # --- 메모 로드/저장 래퍼 함수들 ---
-
+@st.cache_data(ttl=60)     # ✅ 이 줄 추가
 def load_long_memo() -> str:
     """구글시트 '장기메모' 시트에서 A1 내용 읽기"""
     return read_memo_from_sheet(MEMO_LONG_SHEET_NAME)
-
 
 def save_long_memo(content: str) -> bool:
     """장기 메모 저장 후 캐시 초기화"""
     ok = save_memo_to_sheet(MEMO_LONG_SHEET_NAME, content)
     if ok:
-        load_long_memo.clear()
+        load_long_memo.clear()   # 이제 정상 동작 (캐시 클리어)
     return ok
 
 
+@st.cache_data(ttl=60)     # ✅ 이 줄 추가
 def load_mid_memo() -> str:
     """구글시트 '중기메모' 시트에서 A1 내용 읽기"""
     return read_memo_from_sheet(MEMO_MID_SHEET_NAME)
-
 
 def save_mid_memo(content: str) -> bool:
     """중기 메모 저장 후 캐시 초기화"""
     ok = save_memo_to_sheet(MEMO_MID_SHEET_NAME, content)
     if ok:
-        load_mid_memo.clear()
+        load_mid_memo.clear()    # 여기도 정상 동작
     return ok
 
 
