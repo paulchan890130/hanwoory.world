@@ -21,7 +21,12 @@ from config import (
     SESS_HOME_CALENDAR_SELECTED_DATE,  
     # 시트 이름
     MEMO_SHORT_SHEET_NAME,
-    EVENTS_SHEET_NAME,              
+    EVENTS_SHEET_NAME,
+    MEMO_SHORT_SHEET_NAME,
+    EVENTS_SHEET_NAME,
+    PLANNED_TASKS_SHEET_NAME,
+    ACTIVE_TASKS_SHEET_NAME,
+    COMPLETED_TASKS_SHEET_NAME,        
 )
 
 from core.google_sheets import (
@@ -374,13 +379,19 @@ else:
 # ─────────────────────────────
 # 1) 단기메모 로드/저장
 # ─────────────────────────────
-def load_short_memo():
-    """구글시트 '단기메모' 시트에서 A1 셀 내용을 읽어옵니다."""
+@st.cache_data(ttl=60)   # ✅ 캐시 적용 (60초 정도만 캐시)
+def load_short_memo(tenant_id: str | None = None):
+    """
+    구글시트 '단기메모' 시트에서 A1 셀 내용을 읽어옵니다.
+    tenant_id 인자는 캐시 키를 다르게 하기 위한 용도 (내부에서 직접 쓰진 않음).
+    """
     return read_memo_from_sheet(MEMO_SHORT_SHEET_NAME)
+
 
 def save_short_memo(content: str) -> bool:
     tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
     if save_memo_to_sheet(MEMO_SHORT_SHEET_NAME, content):
+        # ✅ 캐시 비우기 → 다음에 다시 읽을 때 실제 시트에서 재로드
         load_short_memo.clear()
         # 필요하면 여기서 load_short_memo(tenant_id) 로 재캐시
         return True
@@ -605,9 +616,9 @@ def render():
         if st.session_state.get("home_calendar_dialog_open") and sel_date:
             show_calendar_dialog(sel_date)
 
-
         # 6) 기존 단기메모는 아래에 그대로 유지
-        memo_short_content = load_short_memo()
+        tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
+        memo_short_content = load_short_memo(tenant_id)
         edited_memo_short = st.text_area(
             "📝 단기메모",
             value=memo_short_content,
@@ -618,7 +629,7 @@ def render():
             if save_short_memo(edited_memo_short):
                 st.success("단기메모를 저장했습니다.")
             else:
-                st.error("단기메모 저장 중 오류가 발생했습니다.")
+                st.error("단기메모 저장에 실패했습니다.")
 
 
     # ── 2·3. 오른쪽: 만기 알림(등록증/여권) ─────────────────
