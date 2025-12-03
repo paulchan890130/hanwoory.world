@@ -22,3 +22,4 @@ token.json
 # Streamlit 캐시 (있다면)
 .streamlit/
 .gsheet
+.zip
