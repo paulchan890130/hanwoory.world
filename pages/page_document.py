@@ -210,8 +210,8 @@ REQUIRED_DOCS = {
     ("체류","부여","F","5"): {"main": ["준비중"], "agent": ["위임장", "대행업무수행확인서"]},
 
     # 체류-신고
-    ("체류","신고","주소",""): {"main": ["준비중"], "agent": ["위임장", "대행업무수행확인서"]},
-    ("체류","신고","등록사항",""): {"main": ["준비중"], "agent": ["위임장", "대행업무수행확인서"]},
+    ("체류","신고","주소",""): {"main": ["통합신청서", "거주숙소 제공 확인서"], "agent": ["위임장", "대행업무수행확인서"]},
+    ("체류","신고","등록사항",""): {"main": ["통합신청서"], "agent": ["위임장", "대행업무수행확인서"]},
 
     # 사증
     ("사증","준비중","",""): {"main": ["준비중"], "agent": []},
@@ -608,13 +608,37 @@ def build_field_values(
 
     return field_values
 
-def make_seal_bytes(name: str = None):
+
+def normalize_seal_name(raw):
+    """
+    도장에 들어갈 이름을 정리:
+    - None 이면 None
+    - 문자열로 변환 후 strip()
+    - 한글이 섞여 있으면 한글만 뽑아서 사용 (띄어쓰기, 잡문자 제거용)
+    """
+    if raw is None:
+        return None
+
+    name = str(raw).strip()
     if not name:
         return None
-    seal_img = create_seal(circle_path, name, font_path, seal_size)
+
+    # 한글만 추출 (윤 찬  -> 윤찬 / 윤찬(대표) -> 윤찬)
+    hangul_only = "".join(ch for ch in name if "가" <= ch <= "힣")
+    return hangul_only or name
+
+
+def make_seal_bytes(name: str = None):
+    # 도장용 이름 정리
+    name_norm = normalize_seal_name(name)
+    if not name_norm:
+        return None
+
+    seal_img = create_seal(circle_path, name_norm, font_path, seal_size)
     buf = io.BytesIO()
     seal_img.save(buf, format="PNG")
     return buf.getvalue()
+
 
 def fill_and_append_pdf(template_path: str, field_values: dict,
                         seal_bytes_by_role: dict, merged_doc: fitz.Document):
@@ -985,7 +1009,7 @@ def render():
         if is_minor:
             applicant_seal_name = guardian["한글"] if guardian is not None else None
         else:
-            applicant_seal_name = 선택된_고객  # row["한글"] 과 동일
+            applicant_seal_name = row.get("한글", "") if row is not None else None
 
         # guardian 필드는 별도 도장이 필요한 경우에만 사용
         guardian_seal_name = guardian["한글"] if guardian is not None else None
