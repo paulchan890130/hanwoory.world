@@ -313,6 +313,7 @@ def build_field_values(
     account=None,
     category=None,
     minwon=None,
+    kind=None,
 ):
     """
     PDF 텍스트 필드에 들어갈 값을 모두 Dict로 만들어서 리턴.
@@ -604,6 +605,12 @@ def build_field_values(
             field_values["change"] = "V"
         elif minwon == "부여":
             field_values["granting"] = "V"
+        elif minwon == "신고":
+        # 종류(kind)에 따라 체크박스 분기
+            if kind == "주소":
+                field_values["adrc"] = "V"
+            elif kind == "등록사항":
+                field_values["ant"] = "V"
     # 필요하면 사증 등 다른 category 도 확장 가능
 
     return field_values
@@ -1061,6 +1068,7 @@ def render():
             account=account,
             category=category,
             minwon=minwon,
+            kind=kind,
         )
 
         merged_doc = fitz.open()
