@@ -33,4 +33,3 @@ ENV PYTHONUNBUFFERED=1 \
 # 7) 컨테이너 시작 명령
 #    Render가 PORT 환경변수를 넣어줌 → 그걸 그대로 사용
 CMD ["bash", "-c", "streamlit run app.py --server.port=$PORT --server.address=0.0.0.0"]
-위 코드가 기존 docker야 어디를 어떻게 고치니
