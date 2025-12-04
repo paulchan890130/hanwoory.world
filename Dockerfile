@@ -13,6 +13,12 @@ RUN apt-get update && \
         libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
+# 2-1) ocrb 언어 데이터 직접 다운로드
+RUN mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
+    curl -L \
+      https://github.com/tesseract-ocr/tessdata_best/raw/main/ocrb.traineddata \
+      -o /usr/share/tesseract-ocr/4.00/tessdata/ocrb.traineddata
+
 # 3) 작업 디렉토리 설정
 WORKDIR /app
 
@@ -29,6 +35,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     STREAMLIT_SERVER_HEADLESS=true \
     STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata
 
 # 7) 컨테이너 시작 명령
 #    Render가 PORT 환경변수를 넣어줌 → 그걸 그대로 사용
