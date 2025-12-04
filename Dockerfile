@@ -34,7 +34,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     STREAMLIT_SERVER_HEADLESS=true \
     STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
-    TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata   # 👈 추가
+    TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata
 
 # 7) 컨테이너 시작 명령
 CMD ["bash", "-c", "streamlit run app.py --server.port=$PORT --server.address=0.0.0.0"]
