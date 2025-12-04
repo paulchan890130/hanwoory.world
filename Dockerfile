@@ -6,7 +6,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-kor \
-        curl \
+        tesseract-ocr-osd \
         libtesseract-dev \
         libglib2.0-0 \
         libsm6 \
@@ -15,10 +15,9 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # 2-1) ocrb 언어 데이터 직접 다운로드
-RUN mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
-    curl -L \
-      https://github.com/tesseract-ocr/tessdata_best/raw/main/ocrb.traineddata \
-      -o /usr/share/tesseract-ocr/4.00/tessdata/ocrb.traineddata
+RUN mkdir -p /usr/share/tesseract-ocr/5/tessdata && \
+    curl -L -o /usr/share/tesseract-ocr/5/tessdata/ocrb.traineddata \
+      https://github.com/tesseract-ocr/tessdata/raw/main/ocrb.traineddata
 
 # 3) 작업 디렉토리 설정
 WORKDIR /app
