@@ -6,7 +6,6 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-kor \
-        tesseract-ocr-osd \
         libtesseract-dev \
         libglib2.0-0 \
         libsm6 \
@@ -14,15 +13,12 @@ RUN apt-get update && \
         libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# 2-1) 로컬에 담아온 OCRB traineddata 복사
-# (프로젝트 루트의 tessdata/ocrb.traineddata 를 컨테이너 tessdata 경로로 복사)
-COPY tessdata/ocrb.traineddata /usr/share/tesseract-ocr/4.00/tessdata/
-
 # 3) 작업 디렉토리 설정
 WORKDIR /app
 
 # 4) 파이썬 패키지 먼저 설치 (캐시 활용 위해 requirements만 먼저 복사)
 COPY requirements.txt .
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 5) 나머지 코드 복사
@@ -32,8 +28,7 @@ COPY . .
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     STREAMLIT_SERVER_HEADLESS=true \
-    STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
-    TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata
+    STREAMLIT_SERVER_ADDRESS=0.0.0.0
 
 # 7) 컨테이너 시작 명령
 #    Render가 PORT 환경변수를 넣어줌 → 그걸 그대로 사용

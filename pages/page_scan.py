@@ -233,47 +233,61 @@ def _minus_years(d: _dt.date, years: int) -> _dt.date:
 
 def _parse_mrz_pair(L1: str, L2: str) -> dict:
     out = {}
-    L1 = _normalize_mrz_line(L1); L2 = _normalize_mrz_line(L2)
 
-    # 이름
-    if '<<' in L1[5:]:
-        sur, given = L1[5:].split('<<', 1)
-        out['성'] = sur.replace('<', ' ').strip()
-        out['명'] = given.replace('<', ' ').strip()
+    # None 방지 + 정규화
+    L1 = _normalize_mrz_line(L1) if L1 else ""
+    L2 = _normalize_mrz_line(L2) if L2 else ""
 
-    # 여권, 국적, 생년, 성별, 만기
-    pn = re.sub(r'[^A-Z0-9]', '', L2[0:9])
-    if pn: out['여권'] = pn
-    nat = re.sub(r'[^A-Z]', '', L2[10:13])
-    if nat: out['국가'] = nat
+    # 🔹 이름: "진짜 여권 1줄(P<...)"처럼 생긴 경우에만 파싱
+    #   - P<로 시작
+    #   - 뒤에 '<<' 구분자가 존재
+    if L1.startswith("P<") and "<<" in L1[5:]:
+        sur, given = L1[5:].split("<<", 1)
+        out["성"] = sur.replace("<", " ").strip()
+        out["명"] = given.replace("<", " ").strip()
+    # 그렇지 않으면 이름은 아예 채우지 않음 → 나머지 필드는 그대로 진행
 
-    b = re.sub(r'[^0-9]', '', L2[13:19])
+    # 여권, 국적, 생년, 성별, 만기 (기존 로직 그대로)
+    pn = re.sub(r"[^A-Z0-9]", "", L2[0:9])
+    if pn:
+        out["여권"] = pn
+
+    nat = re.sub(r"[^A-Z]", "", L2[10:13])
+    if nat:
+        out["국가"] = nat
+
+    b = re.sub(r"[^0-9]", "", L2[13:19])
     if len(b) == 6:
         yy, mm, dd = int(b[:2]), int(b[2:4]), int(b[4:6])
         yy += 2000 if yy < 80 else 1900
-        try: out['생년월일'] = _dt(yy,mm,dd).strftime('%Y-%m-%d')
-        except: pass
+        try:
+            out["생년월일"] = _dt(yy, mm, dd).strftime("%Y-%m-%d")
+        except Exception:
+            pass
 
     sx = L2[20:21]
-    out['성별'] = '남' if sx == 'M' else ('여' if sx == 'F' else '')
+    out["성별"] = "남" if sx == "M" else ("여" if sx == "F" else "")
 
-    e = re.sub(r'[^0-9]', '', L2[21:27])
+    e = re.sub(r"[^0-9]", "", L2[21:27])
     if len(e) == 6:
         yy, mm, dd = int(e[:2]), int(e[2:4]), int(e[4:6])
         yy += 2000 if yy < 80 else 1900
-        try: out['만기'] = _dt(yy,mm,dd).strftime('%Y-%m-%d')
-        except: pass
-
-    # 👉 발급일: 실무 편의를 위해 항상 10년짜리 기준으로 역산 (+1일)
-    if out.get('만기'):
         try:
-            exp = _dt.strptime(out['만기'], '%Y-%m-%d').date()
+            out["만기"] = _dt(yy, mm, dd).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    # 👉 발급일: 10년짜리 기준 역산 (+1일) 그대로 유지
+    if out.get("만기"):
+        try:
+            exp = _dt.strptime(out["만기"], "%Y-%m-%d").date()
             issued = _minus_years(exp, 10) + _td(days=1)
-            out['발급'] = issued.strftime('%Y-%m-%d')
+            out["발급"] = issued.strftime("%Y-%m-%d")
         except Exception:
             pass
 
     return out
+
 
 def parse_passport(img):
     """
