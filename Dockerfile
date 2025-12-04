@@ -14,11 +14,9 @@ RUN apt-get update && \
         libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# 2-1) OCRB traineddata 내려받기
-RUN mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
-    curl -L \
-      -o /usr/share/tesseract-ocr/4.00/tessdata/ocrb.traineddata \
-      https://github.com/tesseract-ocr/tessdata/raw/main/ocrb.traineddata
+# 2-1) 로컬에 담아온 OCRB traineddata 복사
+# (프로젝트 루트의 tessdata/ocrb.traineddata 를 컨테이너 tessdata 경로로 복사)
+COPY tessdata/ocrb.traineddata /usr/share/tesseract-ocr/4.00/tessdata/
 
 # 3) 작업 디렉토리 설정
 WORKDIR /app
