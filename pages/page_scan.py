@@ -336,6 +336,27 @@ def parse_passport(img):
         # MRZ 후보 자체가 안 나오면 그냥 포기
         return {}
 
+    # 🔹 전체 OCR 텍스트에서 `P<국가코드 성<<명` 패턴으로 영문 이름 먼저 뽑기
+    joined_up = re.sub(r"\s+", "", joined.upper())
+    name_from_block = {}
+
+    m_name = re.search(
+        r"P<[A-Z0-9]{3}([A-Z0-9<]{2,30})<<([A-Z0-9<]{2,30})",
+        joined_up,
+    )
+
+    if m_name:
+        def _clean_name_part(s: str) -> str:
+            # 영문+< 만 남기고, < 는 공백으로 바꿔서 정리
+            s = re.sub(r"[^A-Z<]", "", s.upper())
+            s = s.replace("<", " ").strip()
+            s = re.sub(r"\s{2,}", " ", s)
+            return s
+
+        name_from_block["성"] = _clean_name_part(m_name.group(1))
+        name_from_block["명"] = _clean_name_part(m_name.group(2))
+
+    # 1차: 기존 TD3 검증 로직으로 MRZ 2줄 찾기
     # 1차: 기존 TD3 검증 로직으로 MRZ 2줄 찾기
     L1, L2 = find_mrz_pair_from_text(joined)
 
@@ -354,8 +375,13 @@ def parse_passport(img):
         else:
             return {}
 
-
     out = _parse_mrz_pair(L1, L2)
+
+    # 🔹 이름은 블록 전체에서 뽑은 값이 있으면 그걸로 덮어쓰기
+    if name_from_block.get("성") and name_from_block.get("명"):
+        out["성"] = name_from_block["성"]
+        out["명"] = name_from_block["명"]
+
     return {
         "성":       out.get("성", ""),
         "명":       out.get("명", ""),
