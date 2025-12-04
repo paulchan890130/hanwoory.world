@@ -14,9 +14,10 @@ RUN apt-get update && \
         libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# 2-1) ocrb 언어 데이터 직접 다운로드
-RUN mkdir -p /usr/share/tesseract-ocr/5/tessdata && \
-    curl -L -o /usr/share/tesseract-ocr/5/tessdata/ocrb.traineddata \
+# 2-1) OCRB traineddata 내려받기
+RUN mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
+    curl -L \
+      -o /usr/share/tesseract-ocr/4.00/tessdata/ocrb.traineddata \
       https://github.com/tesseract-ocr/tessdata/raw/main/ocrb.traineddata
 
 # 3) 작업 디렉토리 설정
@@ -24,7 +25,6 @@ WORKDIR /app
 
 # 4) 파이썬 패키지 먼저 설치 (캐시 활용 위해 requirements만 먼저 복사)
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 5) 나머지 코드 복사
