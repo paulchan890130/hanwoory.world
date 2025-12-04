@@ -6,9 +6,9 @@ streamlit run app.py
 
 cd "C:\Users\윤찬\K.ID 출입국업무관리"
 
+git fetch origin
 git status          # 뭐가 바뀌었는지 확인
 git add .           # 변경된 파일들 전부 스테이징
-git commit -m "메시지"   # 예: "feat: 회원가입 안내문 수정"
 git push origin main
 
 

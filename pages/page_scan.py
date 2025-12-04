@@ -339,20 +339,39 @@ def parse_passport(img):
     # 1차: 기존 TD3 검증 로직으로 MRZ 2줄 찾기
     L1, L2 = find_mrz_pair_from_text(joined)
 
-    # 2차: 그래도 못 찾으면 '<'가 많이 들어간 줄 두 개를 강제로 선택
+    # 2차: 그래도 못 찾으면 '<'가 많이 들어간 줄들 중에서
+    #      ① 점수 최고 = L2 (번호 줄)
+    #      ② 'P<' 로 시작하는 줄 중 점수 최고 = L1 (이름 줄)
     if not L1 or not L2:
         lines = [l for l in joined.splitlines() if l.strip()]
         scored = []
         for l in lines:
-            score = l.count('<') + sum(c.isdigit() for c in l)
+            norm = _normalize_mrz_line(l)
+            score = norm.count('<') + sum(c.isdigit() for c in norm)
             if score >= 10:  # MRZ 느낌 나는 줄만
-                scored.append((score, _normalize_mrz_line(l)))
-        scored.sort(key=lambda x: x[0])
-        if len(scored) >= 2:
-            L1 = scored[-2][1]
-            L2 = scored[-1][1]
-        else:
+                scored.append((score, norm))
+
+        if not scored:
             return {}
+
+        # 점수 기준 정렬
+        scored.sort(key=lambda x: x[0])
+
+        # L2 후보: 점수가 가장 높은 줄
+        L2 = scored[-1][1]
+
+        # L1 후보: 'P<' 로 시작하는 줄 중에서 점수가 높은 것
+        name_candidates = [norm for score, norm in scored if norm.startswith("P<")]
+
+        if name_candidates:
+            L1 = name_candidates[-1]
+        elif len(scored) >= 2:
+            # 그래도 없으면 기존처럼 두 번째로 높은 점수 줄 사용
+            L1 = scored[-2][1]
+        else:
+            # 후보가 한 줄뿐이면 안전하게 포기
+            return {}
+
 
     out = _parse_mrz_pair(L1, L2)
     return {
