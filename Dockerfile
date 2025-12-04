@@ -5,18 +5,18 @@ FROM python:3.11-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         tesseract-ocr \
-        tesseract-ocr-eng \        # 👈 영어 언어팩 명시
+        tesseract-ocr-eng \
         tesseract-ocr-kor \
         libtesseract-dev \
         libglib2.0-0 \
         libsm6 \
         libxext6 \
         libxrender1 \
-        wget \                     # 👈 ocrb 파일 받으려고 wget 추가
-    && mkdir -p /usr/share/tesseract-ocr/4.00/tessdata \
-    && wget -O /usr/share/tesseract-ocr/4.00/tessdata/ocrb.traineddata \
-         https://github.com/Shreeshrii/tessdata_ocrb/raw/master/ocrb.traineddata \
-    && rm -rf /var/lib/apt/lists/*
+        wget && \
+    mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
+    wget -O /usr/share/tesseract-ocr/4.00/tessdata/ocrb.traineddata \
+        https://github.com/Shreeshrii/tessdata_ocrb/raw/master/ocrb.traineddata && \
+    rm -rf /var/lib/apt/lists/*
 
 # 3) 작업 디렉토리 설정
 WORKDIR /app
