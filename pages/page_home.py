@@ -99,6 +99,7 @@ except Exception:
     KR_HOLIDAYS = None
     CN_HOLIDAYS = None
 
+st.session_state.setdefault("home_calendar_nonce", 0)
 
 @st.cache_data(ttl=300)
 def load_calendar_events_for_tenant(tenant_id: str) -> dict:
@@ -260,12 +261,14 @@ if hasattr(st, "dialog"):
 
             with col_close:
                 if st.button("닫기", use_container_width=True):
-                    # ▶ 팝업 종료 + 다음 한 번은 캘린더 콜백 무시
                     st.session_state["calendar_confirm"] = False
                     st.session_state["calendar_memo_buffer"] = ""
                     st.session_state["home_calendar_dialog_open"] = False
                     st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = None
+
                     st.session_state["suppress_calendar_callback"] = True
+                    st.session_state["home_calendar_nonce"] = st.session_state.get("home_calendar_nonce", 0) + 1  # ✅ 추가
+
                     st.rerun()
 
         else:
@@ -285,7 +288,7 @@ if hasattr(st, "dialog"):
                     st.session_state["home_calendar_dialog_open"] = False
                     # ▶ 다음 한 번은 캘린더 콜백 무시
                     st.session_state["suppress_calendar_callback"] = True
-
+                    st.session_state["home_calendar_nonce"] = st.session_state.get("home_calendar_nonce", 0) + 1  # ✅ 추가
                     st.success("저장되었습니다.")
                     st.rerun()
 
@@ -489,6 +492,7 @@ def render():
             st.session_state[SESS_HOME_SELECTED_MONTH] = month
             st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = None
             st.session_state["home_calendar_dialog_open"] = False
+            st.session_state["suppress_calendar_callback"] = True
 
         elif next_clicked:
             if month == 12:
@@ -500,15 +504,13 @@ def render():
             st.session_state[SESS_HOME_SELECTED_MONTH] = month
             st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = None
             st.session_state["home_calendar_dialog_open"] = False
+            st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
+
 
         # 갱신된 year/month 기준으로 중앙 버튼 표시
         with nav_col2:
             if st.button(f"{year}년 {month}월", key="home_cal_month_label", use_container_width=True):
                 st.session_state["home_month_picker_open"] = True
-        
-                # 년/월 선택 팝업 열기
-        if st.session_state.get("home_month_picker_open"):
-            show_month_picker_dialog()
 
 
         tenant_id = st.session_state.get(SESS_TENANT_ID, DEFAULT_TENANT_ID)
@@ -578,38 +580,43 @@ def render():
             events=calendar_events,
             options=options,
             custom_css=custom_css,
-            key=f"home_calendar_{year}_{month}",
+            key=f"home_calendar_{year}_{month}_{st.session_state.get('home_calendar_nonce', 0)}",
             callbacks=["dateClick", "eventClick"],
         )
 
-        # 날짜 클릭 / 이벤트 클릭 → 선택된 날짜 계산
+        if "home_calendar_nonce" not in st.session_state:
+            st.session_state["home_calendar_nonce"] = 0
+
         # 날짜 클릭 / 이벤트 클릭 → 선택된 날짜 계산
         selected_date_str = None
         suppress = st.session_state.get("suppress_calendar_callback", False)
 
-        if cal_state and not suppress:
-            cb = cal_state.get("callback")
-
-            # 날짜를 직접 클릭했을 때
-            if cb == "dateClick":
-                dc = cal_state.get("dateClick", {})
-                date_raw = dc.get("dateStr") or dc.get("date")
-                selected_date_str = _extract_selected_date(date_raw)
-
-            # 이미 등록된 메모(이벤트)를 클릭했을 때
-            elif cb == "eventClick":
-                ev = cal_state.get("eventClick", {}).get("event", {})
-                date_raw = ev.get("startStr") or ev.get("start")
-                selected_date_str = _extract_selected_date(date_raw)
-
-        elif suppress:
-            # 한 번 콜백을 무시하고 플래그 해제
+        # ✅ suppress가 켜져 있으면 1회만 무시하고 바로 해제
+        if suppress:
             st.session_state["suppress_calendar_callback"] = False
+        else:
+            if cal_state:
+                cb = cal_state.get("callback")
 
-        # 선택된 날짜가 있으면 세션에 저장하고, 팝업 플래그 ON
-        if selected_date_str:
-            st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = selected_date_str
-            st.session_state["home_calendar_dialog_open"] = True
+                # dateClick
+                if cb == "dateClick":
+                    dc = cal_state.get("dateClick", {})
+                    date_raw = dc.get("dateStr") or dc.get("date")
+                    selected_date_str = _extract_selected_date(date_raw)
+
+                # eventClick
+                elif cb == "eventClick":
+                    ev = cal_state.get("eventClick", {}).get("event", {})
+                    date_raw = ev.get("startStr") or ev.get("start")
+                    selected_date_str = _extract_selected_date(date_raw)
+
+                if selected_date_str:
+                    st.session_state[SESS_HOME_CALENDAR_SELECTED_DATE] = selected_date_str
+                    st.session_state["home_calendar_dialog_open"] = True
+
+                    # ✅ 다음 rerun(예정/진행업무 수정 등)에서 달력 콜백이 재처리되지 않게 1회 무시 플래그 ON
+                    st.session_state["suppress_calendar_callback"] = True
+
 
         # 팝업(또는 fallback 카드) 띄우기
         sel_date = st.session_state.get(SESS_HOME_CALENDAR_SELECTED_DATE)
@@ -839,6 +846,7 @@ def render():
             st.session_state[SESS_PLANNED_TASKS_TEMP] = planned_tasks_editable_list
             save_planned_tasks_to_sheet(planned_tasks_editable_list)
             st.success(f"예정업무(ID:{uid}) 수정 저장됨")
+            st.session_state["suppress_calendar_callback"] = True  # ✅ 추
             st.rerun()
 
         # 삭제 요청 버튼
@@ -857,10 +865,12 @@ def render():
                 st.session_state[SESS_PLANNED_TASKS_TEMP] = planned_tasks_editable_list
                 save_planned_tasks_to_sheet(planned_tasks_editable_list)
                 st.session_state["confirm_delete_idx"] = None
+                st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
                 st.rerun()
         with c_no:
             if st.button("❌ 아니오, 취소합니다", key="confirm_no", use_container_width=True):
                 st.session_state["confirm_delete_idx"] = None
+                st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
                 st.rerun()
 
     # 예정업무 추가 폼
@@ -890,6 +900,7 @@ def render():
                 st.session_state[SESS_PLANNED_TASKS_TEMP] = planned_tasks_editable_list
                 save_planned_tasks_to_sheet(planned_tasks_editable_list)
                 st.success("새 예정업무 추가됨")
+                st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
                 st.rerun()
 
     # ── 5. 🛠️ 진행업무 ─────────────────────────────
@@ -991,6 +1002,7 @@ def render():
                     break
             save_active_tasks_to_sheet(full_list)
             st.success("✅ 진행업무가 수정되어 저장되었습니다.")
+            st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
             st.rerun()
 
         # 🅿️ 처리 토글
@@ -1023,11 +1035,13 @@ def render():
                 st.session_state[SESS_ACTIVE_TASKS_TEMP] = full_list
                 save_active_tasks_to_sheet(full_list)
                 st.success("✅ 업무가 완료처리되어 ‘완료업무’ 페이지로 이동합니다.")
+                st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
                 st.rerun()
 
         # ❌ 삭제 요청
         if cols[9].button("❌", key=f"active_request_del_{uid}", use_container_width=True):
             st.session_state["active_delete_uid"] = uid
+            st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
             st.rerun()
 
     # 삭제 확인 UI (루프 밖)
@@ -1043,9 +1057,11 @@ def render():
                 save_active_tasks_to_sheet(new_list)
                 del st.session_state["active_delete_uid"]
                 st.success("🗑️ 삭제되었습니다.")
+                st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
                 st.rerun()
         with c2:
             if st.button("❌ 취소", key=f"active_confirm_no_{del_uid}", use_container_width=True):
                 del st.session_state["active_delete_uid"]
                 st.info("삭제가 취소되었습니다.")
+                st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
                 st.rerun()

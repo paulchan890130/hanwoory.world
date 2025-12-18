@@ -818,6 +818,18 @@ def render():
     with cc1:
         arc_file = st.file_uploader("등록증/스티커 이미지 (선택)", type=["jpg", "jpeg", "png", "webp"])
 
+    # 업로드된 파일이 바뀌면 → 새 스캔으로 판단하고 prefill 플래그 초기화
+    prev_pass = st.session_state.get("_scan_prev_passport_name")
+    prev_arc  = st.session_state.get("_scan_prev_arc_name")
+
+    cur_pass = passport_file.name if passport_file is not None else None
+    cur_arc  = arc_file.name if arc_file is not None else None
+
+    if (cur_pass, cur_arc) != (prev_pass, prev_arc):
+        st.session_state["_scan_prefilled_once"] = False
+        st.session_state["_scan_prev_passport_name"] = cur_pass
+        st.session_state["_scan_prev_arc_name"] = cur_arc
+
     # Tesseract 디버그
     if show_debug:
         with st.expander("🔧 Tesseract 진단 정보"):
@@ -839,28 +851,18 @@ def render():
     # 이미지/미리보기 + 파싱
     if passport_file:
         img_p = open_image_safe(passport_file)
-        st.image(img_p, caption="여권", use_container_width=True)
         parsed_passport = parse_passport(img_p)
     else:
         img_p = None
 
     if arc_file:
         img_a = open_image_safe(arc_file)
-        st.image(img_a, caption="등록증/스티커", use_container_width=True)
         # 🔹 FAST 모드 on/off 에 따라 등록증 파싱 전략 변경
         parsed_arc = parse_arc(img_a, fast=fast_arc)
     else:
         img_a = None
 
 
-    # 여권 생년월일을 등록증 앞자리(YYMMDD)에 우선 반영
-    try:
-        birth = parsed_passport.get("생년월일", "").strip()
-        if birth:
-            yymmdd = _dt.strptime(birth, "%Y-%m-%d").strftime("%y%m%d")
-            st.session_state["scan_등록증"] = yymmdd  # 항상 덮어씀
-    except Exception:
-        pass
 
     # 베스트 OCR 원문 디버그
     if show_debug:
@@ -906,8 +908,9 @@ def render():
             if not v:
                 return
 
-            cur = str(st.session_state.get(k, "")).strip()
             # 값이 달라지면 무조건 새 OCR 값으로 덮어쓴다
+            # 👇 이걸로 교체
+            cur = str(st.session_state.get(k, "")).strip()
             if cur != v:
                 st.session_state[k] = v
                 changed = True
@@ -937,52 +940,73 @@ def render():
 
         return changed
 
-    if _prefill_from_ocr(parsed_passport, parsed_arc) and not st.session_state.get("_scan_prefilled_once"):
-        st.session_state["_scan_prefilled_once"] = True
-        st.rerun()
-
-    # 최종 한 번 더 여권 생년월일 → 등록증 앞자리 우선권
-    try:
-        birth = (parsed_passport.get("생년월일", "") or "").strip()
-        if birth:
-            yymmdd = _dt.strptime(birth, "%Y-%m-%d").strftime("%y%m%d")
-            st.session_state["scan_등록증"] = yymmdd
-    except Exception:
-        pass
+    # 👇 이걸로 교체
+    if not st.session_state.get("_scan_prefilled_once"):
+        if _prefill_from_ocr(parsed_passport, parsed_arc):
+            st.session_state["_scan_prefilled_once"] = True
+            st.rerun()
 
     # -----------------------------
-    # 확인/수정 폼
+    # 확인/수정 폼 (2 x 2 레이아웃)
     # -----------------------------
     if "scan_연" not in st.session_state or not str(st.session_state["scan_연"]).strip():
         st.session_state["scan_연"] = "010"
 
-    st.markdown("### 🔎 OCR 추출값 (필요 시 수정)")
+    st.markdown("### 🔎 스캔 결과 확인 및 수정")
+
     with st.form("scan_confirm_form"):
-        c1, c2, c3 = st.columns(3)
+        # 1) 첫번째 가로 줄: 여권 (이미지 70% + 정보 30%)
+        row1_img_col, row1_info_col = st.columns([7, 3])
 
-        # 기본 인적사항
-        한글 = c1.text_input("한글", key="scan_한글")
-        성   = c1.text_input("성(영문)", key="scan_성")
-        명   = c1.text_input("명(영문)", key="scan_명")
+        with row1_img_col:
+            st.markdown("#### 여권 이미지")
+            if img_p is not None:
+                st.image(img_p, caption="여권", use_container_width=True)
+            else:
+                st.info("여권 이미지를 업로드하세요.")
 
-        여권     = c2.text_input("여권번호", key="scan_여권")
-        여권발급 = c2.text_input("여권 발급일(YYYY-MM-DD)", key="scan_여권발급")
-        여권만기 = c2.text_input("여권 만기일(YYYY-MM-DD)", key="scan_여권만기")
+        with row1_info_col:
+            # 🔹 여권 이미지 높이에 맞춰 대략 중앙쯤에서 시작하도록 위쪽 여백 추가
+            st.markdown("<div style='height: 240px'></div>", unsafe_allow_html=True)
 
-        등록증 = c3.text_input("등록증 앞(YYMMDD)", key="scan_등록증")
-        번호   = c3.text_input("등록증 뒤 7자리",   key="scan_번호")
-        발급일 = c3.text_input("등록증 발급일(YYYY-MM-DD)", key="scan_발급일")
-        만기일 = c3.text_input("등록증 만기일(YYYY-MM-DD)", key="scan_만기일")
-        주소   = c3.text_input("주소", key="scan_주소")
+            st.markdown("#### 여권 정보")
+            성   = st.text_input("성(영문)", key="scan_성")
+            명   = st.text_input("명(영문)", key="scan_명")
+            여권     = st.text_input("여권번호", key="scan_여권")
+            여권발급 = st.text_input("여권 발급일(YYYY-MM-DD)", key="scan_여권발급")
+            여권만기 = st.text_input("여권 만기일(YYYY-MM-DD)", key="scan_여권만기")
 
-        # 🔢 전화번호 + V 필드 (사람이 직접 입력/수정)
-        p1, p2, p3, p4 = st.columns([1, 1, 1, 0.7])
-        연   = p1.text_input("연(앞 3자리)", key="scan_연")
-        락   = p2.text_input("락(중간 4자리)", key="scan_락")
-        처   = p3.text_input("처(끝 4자리)", key="scan_처")
-        V    = p4.text_input("V", key="scan_V")
 
-        submitted = st.form_submit_button("💾 고객관리 반영")
+        # 2) 두번째 가로 줄: 등록증 (이미지 70% + 정보 30%)
+        row2_img_col, row2_info_col = st.columns([7, 3])
+
+        with row2_img_col:
+            st.markdown("#### 등록증 / 스티커 이미지")
+            if img_a is not None:
+                st.image(img_a, caption="등록증/스티커", use_container_width=True)
+            else:
+                st.info("등록증/스티커 이미지를 업로드하지 않아도 됩니다.")
+
+        with row2_info_col:
+            # 🔹 등록증 이미지 중앙쯤에서 입력이 시작되도록 위쪽 여백 추가
+            st.markdown("<div style='height: 160px'></div>", unsafe_allow_html=True)
+
+            st.markdown("#### 등록증 / 연락처 정보")
+            한글   = st.text_input("한글 이름", key="scan_한글")
+            등록증 = st.text_input("등록증 앞(YYMMDD)", key="scan_등록증")
+            번호   = st.text_input("등록증 뒤 7자리",   key="scan_번호")
+            발급일 = st.text_input("등록증 발급일(YYYY-MM-DD)", key="scan_발급일")
+            만기일 = st.text_input("등록증 만기일(YYYY-MM-DD)", key="scan_만기일")
+            주소   = st.text_input("주소", key="scan_주소")
+
+            p1, p2, p3, p4 = st.columns([1, 1, 1, 0.7])
+            연   = p1.text_input("연(앞 3자리)", key="scan_연")
+            락   = p2.text_input("락(중간 4자리)", key="scan_락")
+            처   = p3.text_input("처(끝 4자리)", key="scan_처")
+            V    = p4.text_input("V", key="scan_V")
+
+
+        submitted = st.form_submit_button("💾 고객관리 반영", use_container_width=True)
         if submitted:
             passport_data = {
                 "성":   성.strip(),
@@ -1016,6 +1040,7 @@ def render():
 
             if st.session_state.get("scan_saved_ok"):
                 st.success("✅ 고객관리 데이터에 반영이 완료되었습니다.")
+
 
     if st.button("← 고객관리로 돌아가기", use_container_width=True):
         st.session_state[SESS_CURRENT_PAGE] = PAGE_CUSTOMER
