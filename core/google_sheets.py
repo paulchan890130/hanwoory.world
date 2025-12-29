@@ -572,129 +572,114 @@ def write_data_to_sheet(sheet_name: str, records: list[dict], header_list: list[
         st.error(f"❌ write_data_to_sheet 오류 ({sheet_name}): {e}")
         return False
 
-def upsert_rows_by_id(sheet_key: str, sheet_name: str,
+def _col_letter(n: int) -> str:
+    # 1 -> A, 2 -> B, ... 26 -> Z, 27 -> AA ...
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def upsert_rows_by_id(sheet_name: str,
                       header_list: list[str],
                       records: list[dict],
                       id_field: str = "id") -> bool:
     """
-    - sheet_name 시트에 대해
-      * id_field 기준으로 기존 행은 UPDATE
-      * 시트에 없는 id는 APPEND
-    - records: 프론트에서 올라온 dict 리스트
-    - 삭제는 여기서 처리하지 않음 (별도 삭제 로직으로 다루는 게 안전)
+    id_field 기준:
+    - 기존 id 있으면 해당 행만 UPDATE
+    - 없으면 APPEND
+    - 삭제는 하지 않음(삭제는 delete_row_by_id로 별도 처리)
     """
     try:
         client = get_gspread_client()
-        ws = get_worksheet(sheet_key, sheet_name)
+        ws = get_worksheet(client, sheet_name)
 
-        # 1) 현재 시트 전체 값 가져오기
-        values = ws.get_all_values()  # [ [col1, col2, ...], [...], ... ]
+        values = ws.get_all_values()  # [header, row2, row3...]
+        last_col = _col_letter(len(header_list))
+
+        # 시트 비어있으면: 헤더+전체 한번에
         if not values:
-            # 시트가 비어있으면: 헤더 + records 전체를 한 번에 올린다.
-            all_rows = [header_list]
-            for rec in records:
-                row = [str(rec.get(col, "")) for col in header_list]
-                all_rows.append(row)
-            ws.update(f"A1:{col_index_to_letter(len(header_list))}{len(all_rows)}", all_rows)
+            rows = [header_list] + [[str(r.get(c, "")) for c in header_list] for r in records]
+            ws.update(f"A1:{last_col}{len(rows)}", rows, value_input_option="USER_ENTERED")
             return True
 
+        # 헤더 보정(필요시 1행만 업데이트)
         header = values[0]
-        data_rows = values[1:]
+        if header != header_list:
+            ws.update(f"A1:{last_col}1", [header_list], value_input_option="USER_ENTERED")
+            header = header_list  # 이후 로직은 header_list 기준으로
 
-        # 헤더에 id_field가 없으면 일단 헤더부터 맞춘다.
         if id_field not in header:
-            header = header_list  # 강제로 맞추고
-            # 기존 데이터는 버리고, 전체 다시 쓰는 쪽을 선택해도 됨.
-            # (필요하면 여기 로직 더 정교하게)
-            all_rows = [header_list]
-            for rec in records:
-                row = [str(rec.get(col, "")) for col in header_list]
-                all_rows.append(row)
-            ws.clear()
-            ws.update(f"A1:{col_index_to_letter(len(header_list))}{len(all_rows)}", all_rows)
-            return True
+            raise ValueError(f"시트 헤더에 '{id_field}' 컬럼이 없습니다.")
 
-        # 2) 기존 시트를 id -> (row_index, row_dict)로 매핑
-        col_idx = {c: i for i, c in enumerate(header)}
-        id_col_idx = col_idx[id_field]
+        id_idx = header.index(id_field)
 
-        existing_by_id = {}
-        for idx, row_vals in enumerate(data_rows, start=2):  # 2행부터 데이터
-            if id_col_idx < len(row_vals):
-                rid = row_vals[id_col_idx]
-            else:
-                rid = ""
-            if not rid:
-                continue
-            row_dict = {}
-            for col_name, c_idx in col_idx.items():
-                row_dict[col_name] = row_vals[c_idx] if c_idx < len(row_vals) else ""
-            existing_by_id[rid] = (idx, row_dict)
+        # 기존 id -> row_number(시트 행번호) 매핑
+        existing = {}
+        for r_i, row in enumerate(values[1:], start=2):  # 2행부터 데이터
+            if id_idx < len(row):
+                rid = str(row[id_idx]).strip()
+                if rid:
+                    existing[rid] = r_i
 
-        # 3) records 를 id 기준으로 upsert
-        updates = []      # (row_index, {col_name: value})
-        append_rows = []  # [[...], [...], ...]
+        updates = []
+        appends = []
 
         for rec in records:
             rid = str(rec.get(id_field, "")).strip()
-            # id가 비어 있으면 "신규"로 append
-            if not rid or rid not in existing_by_id:
-                append_rows.append([str(rec.get(col, "")) for col in header_list])
-                continue
+            row_vals = [str(rec.get(c, "")) for c in header_list]
 
-            # 기존 행과 비교해서 바뀐 컬럼만 UPDATE 대상에 넣기
-            row_index, old_row = existing_by_id[rid]
-            changed_cols = {}
-            for col in header_list:
-                new_val = str(rec.get(col, ""))
-                old_val = str(old_row.get(col, ""))
-                if new_val != old_val:
-                    changed_cols[col] = new_val
-            if changed_cols:
-                updates.append((row_index, changed_cols))
+            if rid and rid in existing:
+                row_no = existing[rid]
+                updates.append({
+                    "range": f"A{row_no}:{last_col}{row_no}",
+                    "values": [row_vals],
+                })
+            else:
+                appends.append(row_vals)
 
-        # 4) batch_update (부분 update)
-        batch_body = {"requests": []}
+        # 부분 업데이트(1회)
+        if updates:
+            ws.batch_update(updates, value_input_option="USER_ENTERED")
 
-        for row_index, changed_cols in updates:
-            for col_name, value in changed_cols.items():
-                c_idx = col_idx.get(col_name)
-                if c_idx is None:
-                    continue
-                col_letter = col_index_to_letter(c_idx + 1)
-                cell_range = f"{col_letter}{row_index}"
-                batch_body["requests"].append(
-                    {
-                        "updateCells": {
-                            "range": {
-                                "sheetId": ws.id,
-                                "startRowIndex": row_index - 1,
-                                "endRowIndex": row_index,
-                                "startColumnIndex": c_idx,
-                                "endColumnIndex": c_idx + 1,
-                            },
-                            "rows": [{
-                                "values": [{
-                                    "userEnteredValue": {"stringValue": value}
-                                }]
-                            }],
-                            "fields": "userEnteredValue",
-                        }
-                    }
-                )
-
-        if batch_body["requests"]:
-            ws.spreadsheet.batch_update(batch_body)
-
-        # 5) append_rows
-        if append_rows:
-            ws.append_rows(append_rows, value_input_option="USER_ENTERED")
+        # 신규 append(1회)
+        if appends:
+            ws.append_rows(appends, value_input_option="USER_ENTERED")
 
         return True
 
     except Exception as e:
-        print("upsert_rows_by_id error:", e)
+        st.error(f"❌ upsert_rows_by_id 오류 ({sheet_name}): {e}")
         return False
+
+
+def delete_row_by_id(sheet_name: str, rid: str, id_field: str = "id") -> bool:
+    """id_field 값이 rid인 행을 찾아서 1행 삭제"""
+    try:
+        client = get_gspread_client()
+        ws = get_worksheet(client, sheet_name)
+
+        values = ws.get_all_values()
+        if not values:
+            return True
+
+        header = values[0]
+        if id_field not in header:
+            raise ValueError(f"시트 헤더에 '{id_field}' 컬럼이 없습니다.")
+        id_idx = header.index(id_field)
+
+        target = str(rid).strip()
+        for r_i, row in enumerate(values[1:], start=2):
+            if id_idx < len(row) and str(row[id_idx]).strip() == target:
+                ws.delete_rows(r_i)
+                return True
+
+        return True  # 못 찾으면 그냥 True 처리(안전)
+    except Exception as e:
+        st.error(f"❌ delete_row_by_id 오류 ({sheet_name}): {e}")
+        return False
+
 
 
 def append_rows_to_sheet(sheet_name: str, records: list[dict], header_list: list[str]) -> bool:

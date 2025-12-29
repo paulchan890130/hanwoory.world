@@ -33,12 +33,10 @@ from core.google_sheets import (
     read_memo_from_sheet,
     save_memo_to_sheet,
     read_data_from_sheet,
-    upsert_rows_by_id,   
+    write_data_to_sheet,   
     append_rows_to_sheet,  
     get_gspread_client,    
     get_worksheet,         
-    upsert_rows_by_id,  
-    delete_row_by_id, 
 )
 
 from core.customer_service import (
@@ -409,19 +407,19 @@ def save_short_memo(content: str) -> bool:
 def save_planned_tasks_to_sheet(data_list_of_dicts):
     """예정업무 전체를 시트에 덮어쓰기 저장"""
     header = ['id', 'date', 'period', 'content', 'note']
-    return upsert_rows_by_id(PLANNED_TASKS_SHEET_NAME, data_list_of_dicts, header_list=header)
+    return write_data_to_sheet(PLANNED_TASKS_SHEET_NAME, data_list_of_dicts, header_list=header)
 
 
 def save_active_tasks_to_sheet(data_list_of_dicts):
     """진행업무 전체를 시트에 덮어쓰기 저장"""
     header = [
         'id', 'category', 'date', 'name', 'work',
-        'source_original', 'details', 'planned_expense', 'processed', 'processed_timestamp'
+        'source_original', 'details', 'processed', 'processed_timestamp'
     ]
-    ok = upsert_rows_by_id(ACTIVE_TASKS_SHEET_NAME, header_list=header, records=data_list_of_dicts, id_field="id")
-    return ok
+    return write_data_to_sheet(ACTIVE_TASKS_SHEET_NAME, data_list_of_dicts, header_list=header)
 
-@st.cache_data(ttl=60)
+
+@st.cache_data(ttl=300)
 def load_completed_tasks_from_sheet():
     """완료업무 시트 전체 로드"""
     records = read_data_from_sheet(COMPLETED_TASKS_SHEET_NAME, default_if_empty=[])
@@ -440,7 +438,7 @@ def load_completed_tasks_from_sheet():
 def save_completed_tasks_to_sheet(records):
     """완료업무 전체를 시트에 덮어쓰기 저장"""
     header = ['id', 'category', 'date', 'name', 'work', 'source_original', 'details', 'complete_date']
-    ok = upsert_rows_by_id(COMPLETED_TASKS_SHEET_NAME, records, header_list=header)
+    ok = write_data_to_sheet(COMPLETED_TASKS_SHEET_NAME, records, header_list=header)
     if ok:
         load_completed_tasks_from_sheet.clear()
     return ok
@@ -906,31 +904,12 @@ def render():
                 st.rerun()
 
     # ── 5. 🛠️ 진행업무 ─────────────────────────────
-    def upsert_one_active_task(task: dict) -> bool:
-        header = [
-            'id', 'category', 'date', 'name', 'work',
-            'source_original', 'details', 'planned_expense', 'processed', 'processed_timestamp'
-        ]
-        return upsert_rows_by_id(ACTIVE_TASKS_SHEET_NAME, header_list=header, records=[task], id_field="id")
-
-
-    def upsert_one_completed_task(task: dict) -> bool:
-        header = ['id', 'category', 'date', 'name', 'work', 'source_original', 'details', 'complete_date']
-        return upsert_rows_by_id(COMPLETED_TASKS_SHEET_NAME, header_list=header, records=[task], id_field="id")
-
-
     st.markdown("---")
-    title_l, title_r = st.columns([3, 1])
-    with title_l:
-        st.subheader("5. 🛠️ 진행업무")
+    st.subheader("5. 🛠️ 진행업무")
 
     active_tasks = st.session_state.get(SESS_ACTIVE_TASKS_TEMP, [])
     구분_옵션_active_opts = ["출입국", "전자민원", "공증", "여권", "초청", "영주권", "기타"]
     구분_우선순위_map = {opt: i for i, opt in enumerate(구분_옵션_active_opts)}
-
-    with title_r:
-        total = sum(int(t.get("planned_expense") or 0) for t in active_tasks)
-        st.markdown(f"#### 지출예정 금액 : {total:,} 원")
 
     # 정렬: 미처리 → 처리됨, 구분, 처리시각, 날짜
     active_tasks.sort(key=lambda x: (
@@ -942,8 +921,8 @@ def render():
     ))
 
     # 헤더
-    h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11 = st.columns(
-        [0.8, 0.7, 0.7, 1, 1, 2, 0.7, 0.5, 0.5, 0.5, 0.5],
+    h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns(
+        [0.8, 0.8, 0.8, 1, 1, 2.5, 0.5, 0.5, 0.5, 0.5],
         gap="small",
     )
     h1.markdown("**구분**")
@@ -952,16 +931,15 @@ def render():
     h4.markdown("**업무**")
     h5.markdown("**원본**")
     h6.markdown("**세부내용**")
-    h7.markdown("**지출예정**")
-    h8.markdown("**✏️ 수정**")
-    h9.markdown("**🅿️ 처리**")
-    h10.markdown("**✅ 완료**")
-    h11.markdown("**❌ 삭제**")
+    h7.markdown("**✏️ 수정**")
+    h8.markdown("**🅿️ 처리**")
+    h9.markdown("**✅ 완료**")
+    h10.markdown("**❌ 삭제**")
 
     # 각 행 렌더
     for task in active_tasks:
         uid = task["id"]
-        cols = st.columns([0.8, 0.7, 0.7, 1, 1, 2, 0.7, 0.5, 0.5, 0.5, 0.5], gap="small")
+        cols = st.columns([0.8, 0.8, 0.8, 1, 1, 2.5, 0.5, 0.5, 0.5, 0.5], gap="small")
 
         prev_category = task.get("category", 구분_옵션_active_opts[0])
         new_category = cols[0].selectbox(
@@ -1009,25 +987,10 @@ def render():
                 label_visibility="collapsed",
             )
 
-        prev_planned = int(task.get("planned_expense") or 0)
-
-        if task.get("processed", False):
-            cols[6].markdown(f"<span style='color:blue;'>{prev_planned:,}</span>", unsafe_allow_html=True)
-            new_planned = prev_planned
-        else:
-            new_planned = cols[6].number_input(
-                " ", value=prev_planned, step=1000,
-                key=f"active_planned_{uid}",
-                label_visibility="collapsed",
-            )
-                
-
         # ✏️ 수정
-        if cols[7].button("✏️", key=f"active_edit_{uid}", use_container_width=True):
+        if cols[6].button("✏️", key=f"active_edit_{uid}", use_container_width=True):
             full_list = st.session_state[SESS_ACTIVE_TASKS_TEMP]
-            updated_task = None
-
-            for t in full_list:
+            for i, t in enumerate(full_list):
                 if t["id"] == uid:
                     t["category"] = new_category
                     t["date"] = new_date.strftime("%Y-%m-%d")
@@ -1036,62 +999,47 @@ def render():
                         t["work"] = new_work
                         t["details"] = new_details
                     t["source_original"] = new_src
-                    t["planned_expense"] = new_planned
-                    updated_task = t
                     break
-
-            if updated_task:
-                upsert_one_active_task(updated_task)
-
+            save_active_tasks_to_sheet(full_list)
             st.success("✅ 진행업무가 수정되어 저장되었습니다.")
-            st.session_state["suppress_calendar_callback"] = True
+            st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
             st.rerun()
 
         # 🅿️ 처리 토글
-        if cols[8].button("🅿️", key=f"active_proc_{uid}", use_container_width=True, help="처리 상태 변경"):
+        if cols[7].button("🅿️", key=f"active_proc_{uid}", use_container_width=True, help="처리 상태 변경"):
             full_list = st.session_state[SESS_ACTIVE_TASKS_TEMP]
-            updated_task = None
-
-            for t in full_list:
+            for i, t in enumerate(full_list):
                 if t["id"] == uid:
                     t["processed"] = not t.get("processed", False)
-                    t["processed_timestamp"] = datetime.datetime.now().isoformat() if t["processed"] else " "
-                    updated_task = t
+                    t["processed_timestamp"] = (
+                        datetime.datetime.now().isoformat() if t["processed"] else " "
+                    )
                     break
-
-            if updated_task:
-                upsert_one_active_task(updated_task)
-
-            st.info(f"진행업무(ID:{uid}) 처리 상태가 {'✅ 처리됨' if updated_task['processed'] else '🕓 미처리'} 으로 변경되었습니다.")
+            save_active_tasks_to_sheet(full_list)
+            st.info(f"진행업무(ID:{uid}) 처리 상태가 {'✅ 처리됨' if t['processed'] else '🕓 미처리'} 으로 변경되었습니다.")
             st.rerun()
 
-
         # ✅ 완료로 이동
-        if cols[9].button("✅", key=f"active_complete_{uid}", use_container_width=True, help="완료 처리"):
+        if cols[8].button("✅", key=f"active_complete_{uid}", use_container_width=True, help="완료 처리"):
             full_list = st.session_state[SESS_ACTIVE_TASKS_TEMP]
             completed_item = None
-
             for i, t in enumerate(full_list):
                 if t["id"] == uid:
                     completed_item = full_list.pop(i)
                     completed_item["complete_date"] = datetime.date.today().strftime("%Y-%m-%d")
                     break
-
             if completed_item:
-                # 1) 완료업무에 1행 upsert
-                upsert_one_completed_task(completed_item)
-                # 2) 진행업무 시트에서 해당 id 행 삭제
-                delete_row_by_id(ACTIVE_TASKS_SHEET_NAME, uid, id_field="id")
-                # 3) 세션 갱신
+                completed_list = load_completed_tasks_from_sheet()
+                completed_list.append(completed_item)
+                save_completed_tasks_to_sheet(completed_list)
                 st.session_state[SESS_ACTIVE_TASKS_TEMP] = full_list
-
-            st.success("✅ 업무가 완료처리되어 ‘완료업무’ 페이지로 이동합니다.")
-            st.session_state["suppress_calendar_callback"] = True
-            st.rerun()
-
+                save_active_tasks_to_sheet(full_list)
+                st.success("✅ 업무가 완료처리되어 ‘완료업무’ 페이지로 이동합니다.")
+                st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
+                st.rerun()
 
         # ❌ 삭제 요청
-        if cols[10].button("❌", key=f"active_request_del_{uid}", use_container_width=True):
+        if cols[9].button("❌", key=f"active_request_del_{uid}", use_container_width=True):
             st.session_state["active_delete_uid"] = uid
             st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
             st.rerun()
@@ -1106,12 +1054,10 @@ def render():
                 full = st.session_state[SESS_ACTIVE_TASKS_TEMP]
                 new_list = [t for t in full if t["id"] != del_uid]
                 st.session_state[SESS_ACTIVE_TASKS_TEMP] = new_list
-
-                delete_row_by_id(ACTIVE_TASKS_SHEET_NAME, del_uid, id_field="id")  # ✅ 시트에서 1행 삭제
-
+                save_active_tasks_to_sheet(new_list)
                 del st.session_state["active_delete_uid"]
                 st.success("🗑️ 삭제되었습니다.")
-                st.session_state["suppress_calendar_callback"] = True
+                st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
                 st.rerun()
         with c2:
             if st.button("❌ 취소", key=f"active_confirm_no_{del_uid}", use_container_width=True):

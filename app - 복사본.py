@@ -585,7 +585,6 @@ def load_active_tasks_from_sheet():
         'work': str(r.get('work','')),
         'source_original': str(r.get('source_original', '')), # New field "원본"
         'details': str(r.get('details','')),
-        'planned_expense': str(r.get('planned_expense', '0')),
         'processed': r.get('processed', False) == True or str(r.get('processed', 'false')).lower() == 'true', # Ensure boolean
         'processed_timestamp': str(r.get('processed_timestamp', '')) # Store as string, parse if needed
     } for r in records]
@@ -593,7 +592,7 @@ def load_active_tasks_from_sheet():
 def save_active_tasks_to_sheet(tenant_id, data_list_of_dicts):
     header = [
         'id', 'category', 'date', 'name', 'work',
-        'source_original', 'details', 'planned_expense', 'processed', 'processed_timestamp'
+        'source_original', 'details', 'processed', 'processed_timestamp'
     ]
     sheet_key = get_sheet_key_for_tenant(tenant_id)
     normalized = []

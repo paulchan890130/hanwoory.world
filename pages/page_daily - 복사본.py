@@ -139,7 +139,6 @@ def _save_active_tasks_from_session():
         "work",
         "source_original",
         "details",
-        "planned_expense",
         "processed",
         "processed_timestamp",
     ]
@@ -400,13 +399,11 @@ def render():
                         "work": add_task,
                         "source_original": "",
                         "details": "",
-                        "planned_expense": add_exp_etc,
                         "processed": False,
                         "processed_timestamp": "",
                     }
                     st.session_state[SESS_ACTIVE_TASKS_TEMP].append(new_active)
                     _save_active_tasks_from_session()
-                    "planned_expense",
 
                 st.success(f"{선택날짜_표시}에 새 내역이 추가되었습니다.")
                 st.rerun()

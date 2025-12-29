@@ -314,6 +314,7 @@ def build_field_values(
     category=None,
     minwon=None,
     kind=None,
+    detail=None
 ):
     """
     PDF 텍스트 필드에 들어갈 값을 모두 Dict로 만들어서 리턴.
@@ -603,6 +604,19 @@ def build_field_values(
             field_values["extension"] = "V"
         elif minwon == "변경":
             field_values["change"] = "V"
+            s = str(kind or "").strip()
+            d = str(detail or "").strip()
+
+            if s:
+                if "+" in s:
+                    # kind 자체가 "F+5" 같은 형태면 +만 제거
+                    field_values["changew"] = s.replace("+", "")
+                elif d and s == "F":
+                    # 현재 구조(종류=F, 추가선택=5)면 "F5"
+                    field_values["changew"] = f"{s}{d}"
+                else:
+                    # H2 같은 애들은 그대로
+                    field_values["changew"] = s
         elif minwon == "부여":
             field_values["granting"] = "V"
         elif minwon == "신고":
@@ -698,10 +712,16 @@ def render():
         st.session_state[SESS_DF_CUSTOMER] = load_customer_df_from_sheet(tenant_id)
     df_cust: pd.DataFrame = st.session_state[SESS_DF_CUSTOMER]
 
-    if "document_generated" not in st.session_state:
-        st.session_state["document_generated"] = False
-    if "selected_docs_for_generate" not in st.session_state:
-        st.session_state["selected_docs_for_generate"] = []
+    # ✅ 누락 경고/확인용 상태
+    if "doc_confirm_needed" not in st.session_state:
+        st.session_state["doc_confirm_needed"] = False
+    if "doc_confirmed" not in st.session_state:
+        st.session_state["doc_confirmed"] = False
+    if "doc_run_generation" not in st.session_state:
+        st.session_state["doc_run_generation"] = False
+    if "doc_missing_roles" not in st.session_state:
+        st.session_state["doc_missing_roles"] = []
+
 
     # ── 선택 / 필요서류 / 검색: 3단 세로 그룹 (가로 비율 1:1:3) ──
     col_sel, col_docs, col_search = st.columns([1, 1, 3])
@@ -762,7 +782,7 @@ def render():
 
     # 3) 오른쪽: 검색 항
     with col_search:
-        st.markdown("#### 3. 검색 항")
+        st.markdown("#### 3. 검색 항목")
 
         prov = None
         guardian = None
@@ -990,22 +1010,63 @@ def render():
     st.markdown("---")
 
     # ── 4단계: 최종 서류 작성 ──
-    if st.button("🖨 최종 서류 작성", type="primary"):
+    trigger_generate = st.button("🖨 최종 서류 작성", type="primary") or st.session_state.get("doc_run_generation", False)
+
+    # ✅ 2) 확인 팝업(경고 영역) UI
+    if st.session_state.get("doc_confirm_needed", False):
+        missing_roles = st.session_state.get("doc_missing_roles", [])
+        lines = "\n".join([f"- {r}이(가) 들어가지 않았습니다." for r in missing_roles])
+        st.warning(f"아래 항목이 누락되었습니다.\n{lines}\n\n그대로 작성하시겠습니까?")
+
+        c1, c2 = st.columns(2, gap="small")
+        with c1:
+            if st.button("✅ 그대로 작성", key="doc_confirm_yes", use_container_width=True):
+                st.session_state["doc_confirm_needed"] = False
+                st.session_state["doc_confirmed"] = True
+                st.session_state["doc_run_generation"] = True
+                st.rerun()
+
+        with c2:
+            if st.button("❌ 취소", key="doc_confirm_no", use_container_width=True):
+                st.session_state["doc_confirm_needed"] = False
+                st.session_state["doc_confirmed"] = False
+                st.session_state["doc_run_generation"] = False
+                st.session_state["doc_missing_roles"] = []
+                st.info("취소되었습니다.")
+                st.rerun()
+
+
+    if trigger_generate:
+        # 자동 실행 플래그는 1회 소비
+        if st.session_state.get("doc_run_generation", False):
+            st.session_state["doc_run_generation"] = False
+
+        # 기존 필수 체크(이건 그대로 강제)
         if not 선택된_고객 or row is None:
             st.error("신청인을 먼저 선택해 주세요.")
             return
         if not selected_ids:
             st.error("작성할 서류를 선택해 주세요.")
             return
+
+        # ✅ 여기부터 ‘강제’ 대신 ‘경고+확인’
+        missing = []
         if is_minor and guardian is None:
-            st.error("미성년자는 대리인을 선택해야 합니다.")
-            return
+            missing.append("대리인")
         if need_g and guarantor is None:
-            st.error("이 조합은 신원보증인이 필요합니다.")
-            return
+            missing.append("신원보증인")
         if need_a and aggregator is None:
-            st.error("이 조합은 합산자가 필요합니다.")
-            return
+            missing.append("합산자")
+
+        # 누락이 있는데 아직 확인 안 했으면 -> 경고 띄우고 중단
+        if missing and not st.session_state.get("doc_confirmed", False):
+            st.session_state["doc_missing_roles"] = missing
+            st.session_state["doc_confirm_needed"] = True
+            st.rerun()
+
+        # ✅ 확인 후 진행할 때는 confirmed 초기화(다음번엔 다시 물어보게)
+        st.session_state["doc_confirmed"] = False
+        st.session_state["doc_missing_roles"] = []
 
 
         # 도장 이미지 준비 (체크된 사람만)
@@ -1069,6 +1130,7 @@ def render():
             category=category,
             minwon=minwon,
             kind=kind,
+            detail=detail,
         )
 
         merged_doc = fitz.open()
