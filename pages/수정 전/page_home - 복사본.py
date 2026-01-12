@@ -33,127 +33,15 @@ from core.google_sheets import (
     read_memo_from_sheet,
     save_memo_to_sheet,
     read_data_from_sheet,
-    upsert_rows_by_id,   
+    write_data_to_sheet,   
     append_rows_to_sheet,  
     get_gspread_client,    
     get_worksheet,         
-    upsert_rows_by_id,  
-    delete_row_by_id, 
 )
 
 from core.customer_service import (
     load_customer_df_from_sheet,
 )
-
-
-def _as_bool(v) -> bool:
-    if isinstance(v, bool):
-        return v
-    s = str(v).strip().upper()
-    return s in ("TRUE", "T", "YES", "Y", "1")
-
-def _as_int(v) -> int:
-    try:
-        if v is None:
-            return 0
-        s = str(v).replace(",", "").strip()
-        if s == "" or s.lower() == "none":
-            return 0
-        return int(float(s))
-    except Exception:
-        return 0
-
-
-@st.cache_data(ttl=30, show_spinner=False)
-def _load_active_tasks_cached(sheet_name: str):
-    return read_data_from_sheet(sheet_name, default_if_empty=[])
-
-# 혹시 _as_int를 쓰는 코드가 남아있으면 대비
-_as_int = _as_int
-
-
-def _money_box(placeholder: str, value_int: int, key: str, disabled: bool = False) -> int:
-    """
-    - 값이 0이면 입력칸은 비워두고 placeholder(음영 글씨)만 보이게
-    - 값이 있으면 그 숫자를 입력칸에 표시
-    - 반환은 int (빈칸이면 0)
-    """
-    v0 = _as_int(value_int)
-    default_str = "" if v0 == 0 else str(v0)
-
-    s = st.text_input(
-        " ",
-        value=default_str,
-        placeholder=placeholder,
-        key=key,
-        disabled=disabled,
-        label_visibility="collapsed",
-    )
-
-    s = (s or "").replace(",", "").strip()
-    if s == "":
-        return 0
-    try:
-        return int(s)
-    except Exception:
-        return v0
-
-
-def _ensure_active_tasks_cols(ws, needed_cols: list[str]) -> list[str]:
-    """✅ 헤더는 덮어쓰기/재정렬 금지. 필요한 컬럼만 끝에 추가."""
-    values = ws.get_all_values()
-    if not values:
-        ws.update(f"A1:{col_index_to_letter(len(needed_cols))}1", [needed_cols])
-        return needed_cols
-
-    header = values[0]
-    missing = [c for c in needed_cols if c not in header]
-    if missing:
-        new_header = header + missing
-        ws.update(f"A1:{col_index_to_letter(len(new_header))}1", [new_header])
-        return new_header
-    return header
-
-def _repair_active_tasks_shift_if_needed(ws, header: list[str]) -> None:
-    """✅ 헤더를 중간에 끼워넣어 기존 데이터가 밀린 경우 복구."""
-    need = ["transfer", "cash", "card", "planned_expense", "processed", "processed_timestamp"]
-    if any(c not in header for c in need):
-        return
-    idx = {c: header.index(c) for c in need}
-    start_i = min(idx.values())
-    end_i = max(idx.values())
-
-    values = ws.get_all_values()
-    if len(values) <= 1:
-        return
-
-    ranges, payloads = [], []
-    for row_no, row in enumerate(values[1:], start=2):
-        cash_v = row[idx["cash"]] if idx["cash"] < len(row) else ""
-        proc_v = row[idx["processed"]] if idx["processed"] < len(row) else ""
-        tr_v = row[idx["transfer"]] if idx["transfer"] < len(row) else ""
-        card_v = row[idx["card"]] if idx["card"] < len(row) else ""
-
-        cash_s = str(cash_v).strip().upper()
-        if cash_s in ("TRUE", "FALSE") and str(proc_v).strip() == "" and str(tr_v).strip().isdigit():
-            # transfer(구 planned) -> planned_expense, cash(구 processed) -> processed, card(구 timestamp) -> processed_timestamp
-            row_out = []
-            for col_i in range(start_i, end_i + 1):
-                row_out.append(row[col_i] if col_i < len(row) else "")
-
-            row_out[idx["transfer"] - start_i] = "0"
-            row_out[idx["cash"] - start_i] = "0"
-            row_out[idx["card"] - start_i] = "0"
-            row_out[idx["planned_expense"] - start_i] = str(tr_v).strip()
-            row_out[idx["processed"] - start_i] = cash_s
-            row_out[idx["processed_timestamp"] - start_i] = str(card_v).strip()
-
-            a1 = f"{col_index_to_letter(start_i+1)}{row_no}:{col_index_to_letter(end_i+1)}{row_no}"
-            ranges.append(a1)
-            payloads.append([row_out])
-
-    if ranges:
-        ws.batch_update([{"range": r, "values": v} for r, v in zip(ranges, payloads)])
 
 def _extract_selected_date(date_raw) -> str | None:
     """
@@ -519,21 +407,19 @@ def save_short_memo(content: str) -> bool:
 def save_planned_tasks_to_sheet(data_list_of_dicts):
     """예정업무 전체를 시트에 덮어쓰기 저장"""
     header = ['id', 'date', 'period', 'content', 'note']
-    return upsert_rows_by_id(PLANNED_TASKS_SHEET_NAME, data_list_of_dicts, header_list=header)
+    return write_data_to_sheet(PLANNED_TASKS_SHEET_NAME, data_list_of_dicts, header_list=header)
 
 
 def save_active_tasks_to_sheet(data_list_of_dicts):
     """진행업무 전체를 시트에 덮어쓰기 저장"""
     header = [
         'id', 'category', 'date', 'name', 'work',
-        'details',
-        'transfer', 'cash', 'card', 'stamp', 'receivable',
-        'planned_expense', 'processed', 'processed_timestamp'
+        'source_original', 'details', 'processed', 'processed_timestamp'
     ]
-    ok = upsert_rows_by_id(ACTIVE_TASKS_SHEET_NAME, header_list=header, records=data_list_of_dicts, id_field="id")
-    return ok
+    return write_data_to_sheet(ACTIVE_TASKS_SHEET_NAME, data_list_of_dicts, header_list=header)
 
-@st.cache_data(ttl=60)
+
+@st.cache_data(ttl=300)
 def load_completed_tasks_from_sheet():
     """완료업무 시트 전체 로드"""
     records = read_data_from_sheet(COMPLETED_TASKS_SHEET_NAME, default_if_empty=[])
@@ -543,6 +429,7 @@ def load_completed_tasks_from_sheet():
         'date': str(r.get('date', '')),
         'name': str(r.get('name', '')),
         'work': str(r.get('work', '')),
+        'source_original': str(r.get('source_original', '')),
         'details': str(r.get('details', '')),
         'complete_date': str(r.get('complete_date', '')),
     } for r in records]
@@ -550,8 +437,8 @@ def load_completed_tasks_from_sheet():
 
 def save_completed_tasks_to_sheet(records):
     """완료업무 전체를 시트에 덮어쓰기 저장"""
-    header = ['id', 'category', 'date', 'name', 'work', 'details', 'complete_date']
-    ok = upsert_rows_by_id(COMPLETED_TASKS_SHEET_NAME, records, header_list=header)
+    header = ['id', 'category', 'date', 'name', 'work', 'source_original', 'details', 'complete_date']
+    ok = write_data_to_sheet(COMPLETED_TASKS_SHEET_NAME, records, header_list=header)
     if ok:
         load_completed_tasks_from_sheet.clear()
     return ok
@@ -1017,238 +904,42 @@ def render():
                 st.rerun()
 
     # ── 5. 🛠️ 진행업무 ─────────────────────────────
-    def upsert_one_active_task(task: dict) -> bool:
-        header = [
-            'id', 'category', 'date', 'name', 'work',
-            'details',
-            'transfer', 'cash', 'card', 'stamp', 'receivable',
-            'planned_expense', 'processed', 'processed_timestamp'
-        ]
-        return upsert_rows_by_id(ACTIVE_TASKS_SHEET_NAME, header_list=header, records=[task], id_field="id")
-
-
-    def upsert_one_completed_task(task: dict) -> bool:
-        header = ['id', 'category', 'date', 'name', 'work', 'details', 'complete_date']
-        return upsert_rows_by_id(COMPLETED_TASKS_SHEET_NAME, header_list=header, records=[task], id_field="id")
-
-
     st.markdown("---")
-    title_l, title_r = st.columns([3, 1])
-    with title_l:
-        st.subheader("5. 🛠️ 진행업무")
-    # ✅ 진행업무 시트 스키마 점검은 '세션당 1회'만 (입력마다 네트워크 호출 방지)
-    if not st.session_state.get("active_schema_checked", False):
-        try:
-            client = get_gspread_client()
-            ws_active = get_worksheet(client, ACTIVE_TASKS_SHEET_NAME)
+    st.subheader("5. 🛠️ 진행업무")
 
-            header_now = _ensure_active_tasks_cols(ws_active, [
-                "id","category","date","name","work","details",
-                "transfer","cash","card","stamp","receivable",
-                "planned_expense","processed","processed_timestamp"
-            ])
-            _repair_active_tasks_shift_if_needed(ws_active, header_now)
-        except Exception:
-            pass
-        st.session_state["active_schema_checked"] = True
-    active_tasks = _load_active_tasks_cached(ACTIVE_TASKS_SHEET_NAME)
-    st.session_state[SESS_ACTIVE_TASKS_TEMP] = active_tasks
-
+    active_tasks = st.session_state.get(SESS_ACTIVE_TASKS_TEMP, [])
     구분_옵션_active_opts = ["출입국", "전자민원", "공증", "여권", "초청", "영주권", "기타"]
     구분_우선순위_map = {opt: i for i, opt in enumerate(구분_옵션_active_opts)}
 
-    with title_r:
-        # ✅ 지출예정 합계 + 항목별(결제수단/구분) 합계
-        sum_transfer = 0
-        sum_cash = 0
-        sum_card = 0
-        sum_stamp = 0
-        sum_receivable = 0
-        sum_planned = 0
+    # 정렬: 미처리 → 처리됨, 구분, 처리시각, 날짜
+    active_tasks.sort(key=lambda x: (
+        not x.get('processed', False),
+        구분_우선순위_map.get(x.get('category', "기타"), 99),
+        pd.to_datetime(x.get('processed_timestamp', ''), errors='coerce')
+        if x.get('processed') else pd.Timestamp.min,
+        pd.to_datetime(x.get('date', "9999-12-31"), errors='coerce'),
+    ))
 
-        cat_planned = {c: 0 for c in 구분_옵션_active_opts}
-
-        for t in active_tasks:
-            tr = _as_int(t.get("transfer"))
-            ca = _as_int(t.get("cash"))
-            cd = _as_int(t.get("card"))
-            stp =_as_int(t.get("stamp"))
-            rec =_as_int(t.get("receivable"))
-
-            planned =_as_int(t.get("planned_expense"))
-            if planned <= 0:
-                planned = tr + ca + cd + stp
-
-            sum_transfer += tr
-            sum_cash += ca
-            sum_card += cd
-            sum_stamp += stp
-            sum_receivable += rec
-            sum_planned += planned
-
-            cat = str(t.get("category", "기타")).strip() or "기타"
-            if cat not in cat_planned:
-                cat_planned[cat] = 0
-            cat_planned[cat] += planned
-
-                # ✅ 2줄 요약: '지출예정 : (좌) / 금액(우)' + '(이체/현금/카드/인지) (미수)'
-        st.markdown(
-            f'''
-            <div style="display:flex; justify-content:space-between; align-items:baseline; margin:0; padding:0;">
-                <div>지출예정 :</div>
-                <div>{sum_planned:,}</div>
-            </div>
-            <div style="margin:0; padding:0;">
-                (이체 {sum_transfer:,}, 현금 {sum_cash:,}, 카드 {sum_card:,}, 인지 {sum_stamp:,}) (미수 {sum_receivable:,})
-            </div>
-            ''',
-            unsafe_allow_html=True,
-        )
-        # 정렬: 처리됨 최상단 → 구분순 → 처리시각(최신) → 진행일
-        def _sort_key_active(t: dict):
-            proc = _as_bool(t.get("processed"))
-            cat_rank = 구분_우선순위_map.get(t.get("category", "기타"), 99)
-
-            dt_date = pd.to_datetime(t.get("date", "9999-12-31"), errors="coerce")
-            date_ns = dt_date.value if not pd.isna(dt_date) else pd.Timestamp.max.value
-
-            if proc:
-                ts = pd.to_datetime(t.get("processed_timestamp", ""), errors="coerce")
-                ts_ns = ts.value if not pd.isna(ts) else -1
-                # ✅ 처리된 업무는 최상단(0) + 구분순 + 최신 처리순
-                return (0, cat_rank, -ts_ns, date_ns)
-            # ✅ 미처리는 아래(1) + 구분순 + 진행일순
-            return (1, cat_rank, date_ns)
-
-        active_tasks.sort(key=_sort_key_active)
-
-    # 헤더 (원본 칼럼 제거 + 금액 칼럼 확장)
-    h1, h2, h3, h4, h5, h6, h7, h8, h9 = st.columns(
-        [0.85, 0.85, 0.9, 1.2, 2.0, 4.0, 0.55, 0.55, 0.55],
+    # 헤더
+    h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns(
+        [0.8, 0.8, 0.8, 1, 1, 2.5, 0.5, 0.5, 0.5, 0.5],
         gap="small",
     )
     h1.markdown("**구분**")
     h2.markdown("**진행일**")
     h3.markdown("**성명**")
     h4.markdown("**업무**")
-    h5.markdown("**세부내용**")
-    with h6:
-        lab, btn = st.columns([3, 1], gap="small")
-        lab.markdown("**이체/현금/카드/인지/미수**")
-        bulk_edit_clicked = btn.button("✏️ 수정", key="active_bulk_edit_btn", use_container_width=True)
-    h7.markdown("**🅿️ 처리**")
-    h8.markdown("**✅ 완료**")
-    h9.markdown("**❌ 삭제**")
-
-
-    # ✅ 일괄 수정(변경된 것만 upsert) - 각 행의 ✏️ 버튼은 제거하고, 맨 위 버튼으로만 저장
-    if bulk_edit_clicked:
-        st.session_state["active_bulk_edit_confirm"] = True
-        st.session_state["suppress_calendar_callback"] = True
-        st.rerun()
-
-    if st.session_state.get("active_bulk_edit_confirm", False):
-        st.warning("수정된 내용만 저장합니다. 정말 수정하시겠습니까?")
-        c_yes, c_no = st.columns(2, gap="small")
-        with c_yes:
-            if st.button("✅ 예, 수정 저장", key="active_bulk_edit_yes", use_container_width=True):
-                header_active = [
-                    'id', 'category', 'date', 'name', 'work',
-                    'details',
-                    'transfer', 'cash', 'card', 'stamp', 'receivable',
-                    'planned_expense', 'processed', 'processed_timestamp'
-                ]
-
-                full_list = st.session_state.get(SESS_ACTIVE_TASKS_TEMP, active_tasks) or []
-                changed: list[dict] = []
-                by_id = {t.get("id"): t for t in full_list if t.get("id")}
-
-                for t in full_list:
-                    uid = t.get("id")
-                    if not uid:
-                        continue
-                    if _as_bool(t.get("processed")):
-                        continue  # 처리됨은 잠금(수정 저장 대상 제외)
-
-                    # 현재 입력값(위젯) 읽기
-                    new_category = st.session_state.get(f"active_category_{uid}", t.get("category", "기타"))
-                    d = st.session_state.get(f"active_date_{uid}", None)
-                    if isinstance(d, datetime.date):
-                        new_date_str = d.strftime("%Y-%m-%d")
-                    else:
-                        try:
-                            new_date_str = pd.to_datetime(d).date().isoformat()
-                        except Exception:
-                            new_date_str = str(t.get("date", ""))
-
-                    new_name = st.session_state.get(f"active_name_{uid}", t.get("name", ""))
-                    new_work = st.session_state.get(f"active_work_{uid}", t.get("work", ""))
-                    new_details = st.session_state.get(f"active_details_{uid}", t.get("details", ""))
-
-                    new_transfer   = _as_int(st.session_state.get(f"active_transfer_{uid}", t.get("transfer")))
-                    new_cash       = _as_int(st.session_state.get(f"active_cash_{uid}", t.get("cash")))
-                    new_card       = _as_int(st.session_state.get(f"active_card_{uid}", t.get("card")))
-                    new_stamp      = _as_int(st.session_state.get(f"active_stamp_{uid}", t.get("stamp")))
-                    new_receivable = _as_int(st.session_state.get(f"active_receivable_{uid}", t.get("receivable")))
-
-                    new_planned = int(new_transfer + new_cash + new_card + new_stamp)
-
-                    # 변경 여부 판단
-                    changed_flag = (
-                        str(t.get("category", "")) != str(new_category)
-                        or str(t.get("date", "")) != str(new_date_str)
-                        or str(t.get("name", "")) != str(new_name)
-                        or str(t.get("work", "")) != str(new_work)
-                        or str(t.get("details", "")) != str(new_details)
-                        or _as_int(t.get("transfer")) != new_transfer
-                        or _as_int(t.get("cash")) != new_cash
-                        or _as_int(t.get("card")) != new_card
-                        or _as_int(t.get("stamp")) != new_stamp
-                        or _as_int(t.get("receivable")) != new_receivable
-                        or _as_int(t.get("planned_expense")) != new_planned
-                    )
-
-                    if changed_flag:
-                        u = dict(t)
-                        u["category"] = str(new_category)
-                        u["date"] = str(new_date_str)
-                        u["name"] = str(new_name)
-                        u["work"] = str(new_work)
-                        u["details"] = str(new_details)
-                        u["transfer"] = int(new_transfer)
-                        u["cash"] = int(new_cash)
-                        u["card"] = int(new_card)
-                        u["stamp"] = int(new_stamp)
-                        u["receivable"] = int(new_receivable)
-                        u["planned_expense"] = int(new_planned)
-                        changed.append(u)
-
-                if changed:
-                    ok = upsert_rows_by_id(ACTIVE_TASKS_SHEET_NAME, header_list=header_active, records=changed, id_field="id")
-                    if ok:
-                        for u in changed:
-                            by_id[u["id"]] = u
-                        st.session_state[SESS_ACTIVE_TASKS_TEMP] = list(by_id.values())
-                        st.cache_data.clear()
-                        st.success(f"✅ 수정 저장 완료: {len(changed)}건")
-                    else:
-                        st.error("수정 저장 실패(시트 권한/네트워크/헤더 확인).")
-                else:
-                    st.info("변경된 항목이 없습니다.")
-
-                st.session_state["active_bulk_edit_confirm"] = False
-                st.session_state["suppress_calendar_callback"] = True
-                st.rerun()
-        with c_no:
-            if st.button("❌ 아니오, 취소", key="active_bulk_edit_no", use_container_width=True):
-                st.session_state["active_bulk_edit_confirm"] = False
-                st.session_state["suppress_calendar_callback"] = True
-                st.rerun()
+    h5.markdown("**원본**")
+    h6.markdown("**세부내용**")
+    h7.markdown("**✏️ 수정**")
+    h8.markdown("**🅿️ 처리**")
+    h9.markdown("**✅ 완료**")
+    h10.markdown("**❌ 삭제**")
 
     # 각 행 렌더
     for task in active_tasks:
         uid = task["id"]
-        cols = st.columns([0.85, 0.85, 0.9, 1.2, 2.0, 4.0, 0.55, 0.55, 0.55], gap="small")
+        cols = st.columns([0.8, 0.8, 0.8, 1, 1, 2.5, 0.5, 0.5, 0.5, 0.5], gap="small")
 
         prev_category = task.get("category", 구분_옵션_active_opts[0])
         new_category = cols[0].selectbox(
@@ -1272,7 +963,7 @@ def render():
         )
 
         prev_work = task.get("work", " ")
-        if _as_bool(task.get("processed")):
+        if task.get("processed", False):
             cols[3].markdown(f"<span style='color:blue;'>{prev_work}</span>", unsafe_allow_html=True)
             new_work = prev_work  # 처리됨이면 실제로는 수정하지 않음
         else:
@@ -1280,90 +971,75 @@ def render():
                 " ", value=prev_work, key=f"active_work_{uid}", label_visibility="collapsed"
             )
 
-        prev_details = str(task.get("details", " ") or " ").strip() or " "
-        if _as_bool(task.get("processed")):
-            cols[4].markdown(f"<span style='color:blue;'>{prev_details}</span>", unsafe_allow_html=True)
+        prev_src = task.get("source_original", " ")
+        new_src = cols[4].text_input(
+            " ", value=prev_src, key=f"active_source_{uid}",
+            placeholder="원본 링크/파일", label_visibility="collapsed",
+        )
+
+        prev_details = task.get("details", " ")
+        if task.get("processed", False):
+            cols[5].markdown(f"<span style='color:blue;'>{prev_details}</span>", unsafe_allow_html=True)
             new_details = prev_details
         else:
-            new_details = cols[4].text_input(
+            new_details = cols[5].text_input(
                 " ", value=prev_details, key=f"active_details_{uid}",
                 label_visibility="collapsed",
             )
 
-        prev_transfer = _as_int(task.get("transfer"))
-        prev_cash = _as_int(task.get("cash"))
-        prev_card = _as_int(task.get("card"))
-        prev_stamp = _as_int(task.get("stamp"))
-        prev_receivable = _as_int(task.get("receivable"))
-        prev_planned = _as_int(task.get("planned_expense")) or (prev_transfer + prev_cash + prev_card + prev_stamp)
-
-        # ✅ 비용 입력칸: 5개 박스만 남김(하단 합계/정리 문구 제거)
-        is_proc = _as_bool(task.get("processed"))
-
-        with cols[5]:
-            a1, a2, a3, a4, a5 = st.columns([1, 1, 1, 1, 1], gap="small")
-
-            with a1:
-                new_transfer = _money_box("이체", prev_transfer, key=f"active_transfer_{uid}", disabled=is_proc)
-            with a2:
-                new_cash = _money_box("현금", prev_cash, key=f"active_cash_{uid}", disabled=is_proc)
-            with a3:
-                new_card = _money_box("카드", prev_card, key=f"active_card_{uid}", disabled=is_proc)
-            with a4:
-                new_stamp = _money_box("인지", prev_stamp, key=f"active_stamp_{uid}", disabled=is_proc)
-            with a5:
-                new_receivable = _money_box("미수", prev_receivable, key=f"active_receivable_{uid}", disabled=is_proc)
-
-        # planned_expense는 저장 시 항상 이체+현금+카드+인지 합 (미수 제외)
-        new_planned = int(new_transfer + new_cash + new_card + new_stamp)
-
-
-        # 🅿️ 처리 토글
-        if cols[6].button("🅿️", key=f"active_proc_{uid}", use_container_width=True, help="처리 상태 변경"):
+        # ✏️ 수정
+        if cols[6].button("✏️", key=f"active_edit_{uid}", use_container_width=True):
             full_list = st.session_state[SESS_ACTIVE_TASKS_TEMP]
-            updated_task = None
-
-            for t in full_list:
+            for i, t in enumerate(full_list):
                 if t["id"] == uid:
-                    _new_state = (not _as_bool(t.get("processed")))
-                    t["processed"] = "TRUE" if _new_state else "FALSE"
-                    t["processed_timestamp"] = datetime.datetime.now().isoformat() if _new_state else " "
-                    updated_task = t
+                    t["category"] = new_category
+                    t["date"] = new_date.strftime("%Y-%m-%d")
+                    t["name"] = new_name
+                    if not t.get("processed", False):
+                        t["work"] = new_work
+                        t["details"] = new_details
+                    t["source_original"] = new_src
                     break
-
-            if updated_task:
-                upsert_one_active_task(updated_task)
-
-            st.info(f"진행업무(ID:{uid}) 처리 상태가 {'✅ 처리됨' if _as_bool(updated_task['processed']) else '🕓 미처리'} 으로 변경되었습니다.")
+            save_active_tasks_to_sheet(full_list)
+            st.success("✅ 진행업무가 수정되어 저장되었습니다.")
+            st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
             st.rerun()
 
+        # 🅿️ 처리 토글
+        if cols[7].button("🅿️", key=f"active_proc_{uid}", use_container_width=True, help="처리 상태 변경"):
+            full_list = st.session_state[SESS_ACTIVE_TASKS_TEMP]
+            for i, t in enumerate(full_list):
+                if t["id"] == uid:
+                    t["processed"] = not t.get("processed", False)
+                    t["processed_timestamp"] = (
+                        datetime.datetime.now().isoformat() if t["processed"] else " "
+                    )
+                    break
+            save_active_tasks_to_sheet(full_list)
+            st.info(f"진행업무(ID:{uid}) 처리 상태가 {'✅ 처리됨' if t['processed'] else '🕓 미처리'} 으로 변경되었습니다.")
+            st.rerun()
 
         # ✅ 완료로 이동
-        if cols[7].button("✅", key=f"active_complete_{uid}", use_container_width=True, help="완료 처리"):
+        if cols[8].button("✅", key=f"active_complete_{uid}", use_container_width=True, help="완료 처리"):
             full_list = st.session_state[SESS_ACTIVE_TASKS_TEMP]
             completed_item = None
-
             for i, t in enumerate(full_list):
                 if t["id"] == uid:
                     completed_item = full_list.pop(i)
                     completed_item["complete_date"] = datetime.date.today().strftime("%Y-%m-%d")
                     break
-
             if completed_item:
-                # 1) 완료업무에 1행 upsert
-                upsert_one_completed_task(completed_item)
-                # 2) 진행업무 시트에서 해당 id 행 삭제
-                delete_row_by_id(ACTIVE_TASKS_SHEET_NAME, uid, id_field="id")
-                # 3) 세션 갱신
+                completed_list = load_completed_tasks_from_sheet()
+                completed_list.append(completed_item)
+                save_completed_tasks_to_sheet(completed_list)
                 st.session_state[SESS_ACTIVE_TASKS_TEMP] = full_list
-
-            st.success("✅ 업무가 완료처리되어 ‘완료업무’ 페이지로 이동합니다.")
-            st.session_state["suppress_calendar_callback"] = True
-            st.rerun()
-
+                save_active_tasks_to_sheet(full_list)
+                st.success("✅ 업무가 완료처리되어 ‘완료업무’ 페이지로 이동합니다.")
+                st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
+                st.rerun()
 
         # ❌ 삭제 요청
-        if cols[8].button("❌", key=f"active_request_del_{uid}", use_container_width=True):
+        if cols[9].button("❌", key=f"active_request_del_{uid}", use_container_width=True):
             st.session_state["active_delete_uid"] = uid
             st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
             st.rerun()
@@ -1378,12 +1054,10 @@ def render():
                 full = st.session_state[SESS_ACTIVE_TASKS_TEMP]
                 new_list = [t for t in full if t["id"] != del_uid]
                 st.session_state[SESS_ACTIVE_TASKS_TEMP] = new_list
-
-                delete_row_by_id(ACTIVE_TASKS_SHEET_NAME, del_uid, id_field="id")  # ✅ 시트에서 1행 삭제
-
+                save_active_tasks_to_sheet(new_list)
                 del st.session_state["active_delete_uid"]
                 st.success("🗑️ 삭제되었습니다.")
-                st.session_state["suppress_calendar_callback"] = True
+                st.session_state["suppress_calendar_callback"] = True  # ✅ 추가
                 st.rerun()
         with c2:
             if st.button("❌ 취소", key=f"active_confirm_no_{del_uid}", use_container_width=True):

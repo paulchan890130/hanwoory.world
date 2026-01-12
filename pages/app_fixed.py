@@ -28,8 +28,6 @@ from pages.page_document import render as render_document_page
 from pages import page_scan
 from pages import page_completed
 
-from pages.page_quick_doc import render as render_quick_doc_page
-
 from config import RUN_ENV, TENANT_MODE
 
 # ==== OCR ====
@@ -93,7 +91,6 @@ from config import (
     PAGE_MONTHLY,
     PAGE_MANUAL,
     PAGE_DOCUMENT,
-    PAGE_QUICK_DOC,   # ✅ 이 줄 추가
     PAGE_COMPLETED,
     PAGE_SCAN,
     PAGE_ADMIN_ACCOUNTS,
@@ -578,65 +575,137 @@ def save_planned_tasks_to_sheet(tenant_id, data_list_of_dicts):
 
 # --- Active Task Functions ---
 @st.cache_data(ttl=300)
+def load_active_tasks_from_sheet():
+    """진행업무 시트 로드
 
-def load_active_tasks_from_sheet(): 
+    ✅ 신규 스키마(이체/현금/카드/인지/미수) 대응
+    - transfer/cash/card/stamp : 지출(예정)
+    - receivable              : 미수(수입)
+    - planned_expense         : transfer+cash+card+stamp 합계(표시/정렬용)
+
+    (구 스키마) planned_expense만 있는 경우도 그대로 로드한다.
+    """
     records = read_data_from_sheet(ACTIVE_TASKS_SHEET_NAME, default_if_empty=[])
-    return [{
-        'id': r.get('id', str(uuid.uuid4())), 
-        'category': str(r.get('category','')),
-        'date': str(r.get('date','')),
-        'name': str(r.get('name','')),
-        'work': str(r.get('work','')),
-        'details': str(r.get('details','')),
-        'transfer': str(r.get('transfer','0') or '0'),
-        'cash': str(r.get('cash','0') or '0'),
-        'card': str(r.get('card','0') or '0'),
-        'stamp': str(r.get('stamp','0') or '0'),
-        'receivable': str(r.get('receivable','0') or '0'),
-        'planned_expense': str(r.get('planned_expense', '0') or '0'),
-        'processed': r.get('processed', False) == True or str(r.get('processed', 'false')).lower() == 'true',
-        'processed_timestamp': str(r.get('processed_timestamp', ''))
-    } for r in records]
+
+    def _s(v, default=""):
+        return default if v is None else str(v)
+
+    def _b(v):
+        if v is True:
+            return True
+        s = str(v).strip().lower()
+        return s in ("true", "1", "yes", "y")
+
+    out = []
+    for r in records:
+        out.append(
+            {
+                "id": _s(r.get("id"), str(uuid.uuid4())),
+                "category": _s(r.get("category"), ""),
+                "date": _s(r.get("date"), ""),
+                "name": _s(r.get("name"), ""),
+                "work": _s(r.get("work"), ""),
+                "source_original": _s(r.get("source_original"), ""),
+                "details": _s(r.get("details"), ""),
+                "transfer": _s(r.get("transfer"), "0"),
+                "cash": _s(r.get("cash"), "0"),
+                "card": _s(r.get("card"), "0"),
+                "stamp": _s(r.get("stamp"), "0"),
+                "receivable": _s(r.get("receivable"), "0"),
+                "planned_expense": _s(r.get("planned_expense"), "0"),
+                "processed": _b(r.get("processed")),
+                "processed_timestamp": _s(r.get("processed_timestamp"), ""),
+            }
+        )
+    return out
+
 
 def save_active_tasks_to_sheet(tenant_id, data_list_of_dicts):
+    """진행업무 시트 저장(전체 overwrite 방식)
+
+    ⚠️ 이 함수는 현재 홈/데일리 페이지에서 upsert로 저장하므로
+    실제 호출될 일은 거의 없지만, 스키마는 맞춰둔다.
+    """
     header = [
-        'id','category','date','name','work','details',
-        'transfer','cash','card','stamp','receivable',
-        'planned_expense','processed','processed_timestamp'
+        "id",
+        "category",
+        "date",
+        "name",
+        "work",
+        "source_original",
+        "details",
+        "transfer",
+        "cash",
+        "card",
+        "stamp",
+        "receivable",
+        "planned_expense",
+        "processed",
+        "processed_timestamp",
     ]
-    sheet_key = get_sheet_key_for_tenant(tenant_id)
+
+    def _i(x):
+        try:
+            if x is None or str(x).strip() == "":
+                return 0
+            return int(float(str(x).replace(",", "")))
+        except Exception:
+            return 0
+
     normalized = []
     for r in data_list_of_dicts:
-        rec = {}
-        for col in header:
-            rec[col] = "" if r.get(col) is None else str(r.get(col))
-        normalized.append(rec)
+        transfer = _i(r.get("transfer"))
+        cash = _i(r.get("cash"))
+        card = _i(r.get("card"))
+        stamp = _i(r.get("stamp"))
+        receivable = _i(r.get("receivable"))
+        planned_expense = transfer + cash + card + stamp
 
-    ok = upsert_rows_by_id(sheet_key, ACTIVE_TASKS_SHEET_NAME,
-                           header_list=header,
-                           records=normalized,
-                           id_field="id")
-    if ok:
-        load_active_tasks_from_sheet.clear()
-    return ok
+        normalized.append(
+            {
+                "id": str(r.get("id", "")).strip() or str(uuid.uuid4()),
+                "category": str(r.get("category", "")).strip(),
+                "date": str(r.get("date", "")).strip(),
+                "name": str(r.get("name", "")).strip(),
+                "work": str(r.get("work", "")).strip(),
+                "source_original": str(r.get("source_original", "")).strip(),
+                "details": str(r.get("details", "")).strip(),
+                "transfer": str(transfer),
+                "cash": str(cash),
+                "card": str(card),
+                "stamp": str(stamp),
+                "receivable": str(receivable),
+                "planned_expense": str(planned_expense),
+                "processed": bool(r.get("processed", False)),
+                "processed_timestamp": str(r.get("processed_timestamp", "")).strip(),
+            }
+        )
+
+    write_data_to_sheet(ACTIVE_TASKS_SHEET_NAME, normalized, header_list=header)
+    load_active_tasks_from_sheet.clear()
+    return True
+
 
 # --- Completed Task Functions ---
-@st.cache_data(ttl=300) # Added cache
 
+@st.cache_data(ttl=300) # Added cache
 def load_completed_tasks_from_sheet(): # Renamed
     records = read_data_from_sheet(COMPLETED_TASKS_SHEET_NAME, default_if_empty=[])
+    # Ensure all fields are strings and have defaults
     return [{
         'id': r.get('id', str(uuid.uuid4())),
         'category': str(r.get('category', '')),
         'date': str(r.get('date', '')),
         'name': str(r.get('name', '')),
         'work': str(r.get('work', '')),
+        'source_original': str(r.get('source_original', '')), # Added source_original
         'details': str(r.get('details', '')),
         'complete_date': str(r.get('complete_date', ''))
     } for r in records]
 
 def save_completed_tasks_to_sheet(tenant_id, records):
-    header = ['id','category','date','name','work','details','complete_date']
+    header = ['id', 'category', 'date', 'name', 'work',
+              'source_original', 'details', 'complete_date']
     sheet_key = get_sheet_key_for_tenant(tenant_id)
     normalized = []
     for r in records:
@@ -889,7 +958,6 @@ if st:
 
     with toolbar_col:
         toolbar_options = {
-            "⚡ 위임장(빠른작성)": PAGE_QUICK_DOC,
             "🏠 홈으로": PAGE_HOME,
             "🗒 메모장": PAGE_MEMO,
             "📚 업무": PAGE_REFERENCE,
@@ -916,12 +984,23 @@ if st:
             else:
                 if col.button(label, key=f"nav-{page_key}-{idx}", use_container_width=True):
                     st.session_state[SESS_CURRENT_PAGE] = page_key
-                    # ✅ 결산 페이지로 이동할 때는 날짜를 오늘로 초기화
-                    if page_key == PAGE_DAILY:
-                        st.session_state['daily_selected_date'] = datetime.date.today()
                     st.rerun()
 
-    st.markdown("---") 
+    st.markdown("---")
+
+    # ✅ 페이지 이동 감지(일일결산 날짜 리셋)
+    if "_last_page" not in st.session_state:
+        st.session_state["_last_page"] = st.session_state.get(SESS_CURRENT_PAGE)
+
+    current_page_to_display = st.session_state[SESS_CURRENT_PAGE]
+    last_page = st.session_state.get("_last_page")
+
+    # 다른 페이지 → DAILY로 돌아오면 항상 '오늘'로 리셋
+    if current_page_to_display == PAGE_DAILY and last_page != PAGE_DAILY:
+        st.session_state[SESS_DAILY_SELECTED_DATE] = datetime.date.today()
+        st.session_state[SESS_DAILY_DATE_INPUT_KEY] = f"daily_date_input_{uuid.uuid4().hex[:8]}"
+
+    st.session_state["_last_page"] = current_page_to_display
 
     current_page_to_display = st.session_state[SESS_CURRENT_PAGE]
 
@@ -932,11 +1011,6 @@ if st:
 
     if current_page_to_display == PAGE_CUSTOMER:
         render_customer_page()
-
-
-    elif current_page_to_display == PAGE_QUICK_DOC:
-        render_quick_doc_page()
-
 
     # -----------------------------
     # ✅ Daily Summary Page

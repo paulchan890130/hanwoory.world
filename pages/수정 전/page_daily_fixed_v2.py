@@ -201,6 +201,7 @@ ACTIVE_TASKS_HEADER_V2 = [
     "date",
     "name",
     "work",
+    "source_original",
     "details",
     "transfer",
     "cash",
@@ -298,7 +299,14 @@ def _repair_active_tasks_shift_if_needed(ws, header: list[str]) -> None:
         batch = [{"range": r, "values": v} for r, v in zip(ranges, payloads)]
         ws.batch_update(batch)
 
+    header = values[0]
+    # 필요한 컬럼이 하나라도 없으면, 헤더를 V2로 강제 확장 (데이터는 유지)
+    missing = [h for h in header_needed if h not in header]
+    if missing:
+        ws.update(f"A1:{_col_letter(len(header_needed))}1", [header_needed])
+        return header_needed
 
+    return header
 
 
 def _col_letter(n: int) -> str:
@@ -433,6 +441,7 @@ def apply_daily_to_active_tasks(
                 "date": date_str,
                 "name": name,
                 "work": work,
+                "source_original": "daily",
                 "details": memo_user or "",
                 "transfer": 0,
                 "cash": 0,
@@ -570,6 +579,7 @@ def _save_active_tasks_from_session():
             "date",
             "name",
             "work",
+            "source_original",
             "details",
             "transfer",
             "cash",
@@ -587,6 +597,7 @@ def _save_active_tasks_from_session():
             "date",
             "name",
             "work",
+            "source_original",
             "details",
             "planned_expense",
             "processed",
@@ -649,83 +660,57 @@ def render():
     if not 오늘_데이터:
         st.info("선택한 날짜에 등록된 내역이 없습니다.")
 
-    
     # -------------------
-    # 기존 내역 리스트(수정/삭제) - ✅ 표시열 최소화 + id 기준 안전 저장
+    # 기존 내역 리스트(수정/삭제) - 기존 안정 로직 유지 (✅ key를 id 기반으로 변경)
     # -------------------
 
     # ✅ 옵션 중복 방지 ("현금출금"이 구분_옵션에 이미 있으면 2번 들어가는 문제 예방)
     cat_options = ["현금출금"] + [x for x in 구분_옵션 if x != "현금출금"]
-
-    # 헤더(표시 컬럼)
-    hc1, hc2, hc3, hc4, hc6, hc7, hc8, hc9, hc10 = st.columns(
-        [0.95, 1.05, 1.60, 3.40, 1.35, 1.35, 1.35, 0.75, 0.75],
-        gap="small",
-    )
-    hc1.markdown("**구분**")
-    hc2.markdown("**성명**")
-    hc3.markdown("**내용**")
-    hc4.markdown("**세부내용**")
-    hc6.markdown("**금액(수입)**")
-    hc7.markdown("**금액(지출1)**")
-    hc8.markdown("**금액(지출2)**")
-    hc9.markdown("**수정**")
-    hc10.markdown("**삭제**")
 
     for idx, row_data in enumerate(오늘_데이터):
         # ✅ 핵심: Streamlit key는 idx가 아니라 "id" 기반이어야 삭제/정렬에도 안 꼬임
         rid = str(row_data.get("id", "")).strip()
         if not rid:
             rid = f"idx_{idx}"  # 혹시 id 비어있는 레거시 데이터 대비
+        # ✅ 수입/지출 수단(meta) 표시
+        meta_show, _ = _unpack_memo(row_data.get("memo", ""))
 
-        # ✅ 메모(meta) 분리
-        meta, memo_user = _unpack_memo(row_data.get("memo", ""))
-        inc_m = (meta.get("inc") or "").strip()
-        e1_m = (meta.get("e1") or "").strip()
-        e2_m = (meta.get("e2") or "").strip()
+        cols = st.columns([0.8, 0.8, 1, 2, 1, 1, 1, 1, 1, 1, 0.7])
+        # ✅ meta를 '해당 금액 칸 위'에 맞춰 표시
+        inc_m = (meta_show.get("inc") or "").strip()
+        e1_m = (meta_show.get("e1") or "").strip()
+        e2_m = (meta_show.get("e2") or "").strip()
 
-        inc_cash = safe_int(row_data.get("income_cash", 0))
-        inc_etc  = safe_int(row_data.get("income_etc", 0))
-        exp_cash = safe_int(row_data.get("exp_cash", 0))
-        exp_etc  = safe_int(row_data.get("exp_etc", 0))
-        cash_out = safe_int(row_data.get("cash_out", 0))
+        # 수입: 현금이면 현금입금, 그 외(이체/카드/미수)는 기타입금 칸 위에 표시
+        cols[4].caption(f"수입({inc_m})" if inc_m == "현금" else "")
+        cols[7].caption(f"수입({inc_m})" if inc_m and inc_m != "현금" else "")
 
-        is_cashout = (cash_out > 0) or (str(row_data.get("category", "")).strip() == "현금출금")
-
-        # ✅ 화면 표시용 금액(3칸)
-        if is_cashout:
-            disp_inc = 0
-            disp_e1  = cash_out
-            disp_e2  = 0
-        else:
-            disp_inc = inc_cash if inc_m == "현금" else inc_etc
-
-            # 과거 데이터는 exp_cash/exp_etc만 있고 e1/e2 개별 금액이 없어 완벽 분리 불가
-            if e1_m and e2_m:
-                if e1_m == "현금" and e2_m != "현금":
-                    disp_e1, disp_e2 = exp_cash, exp_etc
-                elif e1_m != "현금" and e2_m == "현금":
-                    disp_e1, disp_e2 = exp_etc, exp_cash
-                elif e1_m == "현금" and e2_m == "현금":
-                    disp_e1, disp_e2 = exp_cash, 0
-                else:
-                    disp_e1, disp_e2 = exp_etc, 0
-            elif e1_m:
-                disp_e1 = exp_cash if e1_m == "현금" else exp_etc
-                disp_e2 = 0
-            elif e2_m:
-                disp_e1 = exp_cash if e2_m == "현금" else exp_etc
-                disp_e2 = 0
+        # 지출: 현금이면 현금지출, 그 외(이체/카드/인지)는 기타지출 칸 위에 표시
+        cash_tags = []
+        etc_tags = []
+        for lab, t in (("지출1", e1_m), ("지출2", e2_m)):
+            if not t:
+                continue
+            if t == "현금":
+                cash_tags.append(f"{lab}({t})")
             else:
-                # 메타가 없으면 기존 합계만 보여줌(기타지출 우선)
-                disp_e1 = exp_etc if exp_etc else exp_cash
-                disp_e2 = 0
+                etc_tags.append(f"{lab}({t})")
+        cols[5].caption(" / ".join(cash_tags) if cash_tags else "")
+        cols[8].caption(" / ".join(etc_tags) if etc_tags else "")
 
-        cols = st.columns([0.95, 1.05, 1.60, 3.40, 1.35, 1.35, 1.35, 0.75, 0.75], gap="small")
+        # 현금출금
+        if safe_int(row_data.get("cash_out", 0)) > 0:
+            cols[6].caption("현금출금")
 
-        # 구분
+        cols[0].text_input(
+            "시간",
+            value=row_data.get("time", " "),
+            key=f"time_disp_{rid}",
+            label_visibility="collapsed",
+        )
+
         prev_category = row_data.get("category", "")
-        cols[0].selectbox(
+        cols[1].selectbox(
             "구분",
             cat_options,
             index=cat_options.index(prev_category) if prev_category in cat_options else 0,
@@ -733,85 +718,100 @@ def render():
             label_visibility="collapsed",
         )
 
-        # 성명 / 내용 / 세부내용
-        cols[1].text_input("성명", value=row_data.get("name", " "), key=f"name_{rid}", label_visibility="collapsed")
-        cols[2].text_input("내용", value=row_data.get("task", " "), key=f"task_{rid}", label_visibility="collapsed")
-        cols[3].text_input("세부내용", value=memo_user or " ", key=f"memo_{rid}", label_visibility="collapsed")
+        cols[2].text_input(
+            "성명",
+            value=row_data.get("name", " "),
+            key=f"name_{rid}",
+            label_visibility="collapsed",
+        )
+        cols[3].text_input(
+            "업무",
+            value=row_data.get("task", " "),
+            key=f"task_{rid}",
+            label_visibility="collapsed",
+        )
 
-        # 금액(수입/지출1/지출2) - meta를 '해당 칸 위'에 표시
-        if inc_m:
-            cols[4].caption(f"수입({inc_m})")
-        if is_cashout:
-            cols[5].caption("현금출금")
-        elif e1_m:
-            cols[5].caption(f"지출1({e1_m})")
-        if (not is_cashout) and e2_m:
-            cols[6].caption(f"지출2({e2_m})")
+        cols[4].number_input(
+            "현금입금",
+            value=safe_int(row_data.get("income_cash", 0)),
+            key=f"inc_cash_{rid}",
+            format="%d",
+            label_visibility="collapsed",
+            help="현금입금",
+        )
+        cols[5].number_input(
+            "현금지출",
+            value=safe_int(row_data.get("exp_cash", 0)),
+            key=f"exp_cash_{rid}",
+            format="%d",
+            label_visibility="collapsed",
+            help="현금지출",
+        )
+        cols[6].number_input(
+            "현금출금",
+            value=safe_int(row_data.get("cash_out", 0)),
+            key=f"cash_out_{rid}",
+            format="%d",
+            label_visibility="collapsed",
+            help="현금출금(개인)",
+        )
+        cols[7].number_input(
+            "기타입금",
+            value=safe_int(row_data.get("income_etc", 0)),
+            key=f"inc_etc_{rid}",
+            format="%d",
+            label_visibility="collapsed",
+            help="기타입금(이체/카드/미수 포함 가능)",
+        )
+        cols[8].number_input(
+            "기타지출",
+            value=safe_int(row_data.get("exp_etc", 0)),
+            key=f"exp_etc_{rid}",
+            format="%d",
+            label_visibility="collapsed",
+            help="기타지출(이체/카드/인지 포함 가능)",
+        )
 
-        cols[4].number_input("금액(수입)",  min_value=0, step=1000, value=int(disp_inc), key=f"amt_inc_{rid}", label_visibility="collapsed")
-        cols[5].number_input("금액(지출1)", min_value=0, step=1000, value=int(disp_e1),  key=f"amt_e1_{rid}",  label_visibility="collapsed")
-        cols[6].number_input("금액(지출2)", min_value=0, step=1000, value=int(disp_e2),  key=f"amt_e2_{rid}",  label_visibility="collapsed")
+        meta, user_memo = _unpack_memo(row_data.get("memo", ""))
+        cols[9].text_input(
+            "비고",
+            value=user_memo if user_memo else " ",
+            key=f"memo_{rid}",
+            label_visibility="collapsed",
+            placeholder="비고",
+        )
+
+
+        action_cols_daily = cols[10].columns(2)
 
         # --- 수정(✏️)
-        if cols[7].button("✏️", key=f"edit_daily_{rid}", use_container_width=True):
-            new_category = st.session_state.get(f"daily_category_{rid}", prev_category)
-            new_name     = st.session_state.get(f"name_{rid}", row_data.get("name", " "))
-            new_task     = st.session_state.get(f"task_{rid}", row_data.get("task", " "))
-            new_memo_user = (st.session_state.get(f"memo_{rid}", " ") or " ").strip()
+        if action_cols_daily[0].button("✏️", key=f"edit_daily_{rid}"):
+            new_time = st.session_state.get(f"time_disp_{rid}", row_data.get("time", " "))
+            new_name = st.session_state.get(f"name_{rid}", " ")
+            new_task = st.session_state.get(f"task_{rid}", " ")
+            new_category = st.session_state.get(f"daily_category_{rid}", "")
+            new_inc_cash = safe_int(st.session_state.get(f"inc_cash_{rid}", 0))
+            new_exp_cash = safe_int(st.session_state.get(f"exp_cash_{rid}", 0))
+            new_cash_out = safe_int(st.session_state.get(f"cash_out_{rid}", 0))
+            new_inc_etc = safe_int(st.session_state.get(f"inc_etc_{rid}", 0))
+            new_exp_etc = safe_int(st.session_state.get(f"exp_etc_{rid}", 0))
+            new_memo_user = st.session_state.get(f"memo_{rid}", " ").strip()
 
-            new_inc_amt = safe_int(st.session_state.get(f"amt_inc_{rid}", 0))
-            new_e1_amt  = safe_int(st.session_state.get(f"amt_e1_{rid}", 0))
-            new_e2_amt  = safe_int(st.session_state.get(f"amt_e2_{rid}", 0))
-
-            if is_cashout:
-                new_inc_cash = 0
-                new_inc_etc  = 0
-                new_exp_cash = 0
-                new_exp_etc  = 0
-                new_cash_out = new_e1_amt
-            else:
-                # 수입: meta inc 기준으로 cash/etc 분배
-                if inc_m == "현금":
-                    new_inc_cash, new_inc_etc = new_inc_amt, 0
-                else:
-                    new_inc_cash, new_inc_etc = 0, new_inc_amt
-
-                # 지출: e1/e2 타입에 따라 합산
-                new_exp_cash = 0
-                new_exp_etc  = 0
-                if e1_m == "현금":
-                    new_exp_cash += new_e1_amt
-                elif e1_m:
-                    new_exp_etc += new_e1_amt
-                else:
-                    # 레거시(메타 없음)는 기타지출로 저장
-                    new_exp_etc += new_e1_amt
-
-                if e2_m == "현금":
-                    new_exp_cash += new_e2_amt
-                elif e2_m:
-                    new_exp_etc += new_e2_amt
-                else:
-                    # 레거시(메타 없음)는 기타지출로 저장
-                    new_exp_etc += new_e2_amt
-
-                new_cash_out = 0
-
-            # ✅ 기존 메타 태그는 유지(메모 태그 + 사용자 세부내용)
-            new_memo = _pack_memo(new_memo_user, inc_m, e1_m, e2_m)
+            # ✅ 기존 메타 태그는 유지
+            new_memo = _pack_memo(new_memo_user, meta.get("inc", ""), meta.get("e1", ""), meta.get("e2", ""))
 
             updated = {
                 "id": row_data.get("id"),
                 "date": row_data.get("date"),
-                "time": row_data.get("time", " "),
+                "time": new_time,
                 "category": new_category,
                 "name": new_name,
                 "task": new_task,
-                "income_cash": int(new_inc_cash),
-                "income_etc": int(new_inc_etc),
-                "exp_cash": int(new_exp_cash),
-                "cash_out": int(new_cash_out),
-                "exp_etc": int(new_exp_etc),
+                "income_cash": new_inc_cash,
+                "income_etc": new_inc_etc,
+                "exp_cash": new_exp_cash,
+                "cash_out": new_cash_out,
+                "exp_etc": new_exp_etc,
                 "memo": new_memo,
             }
 
@@ -824,7 +824,7 @@ def render():
                 st.error("저장 실패")
 
         # --- 삭제(🗑️) : ✅ id 단위 삭제 + 예/아니오 확인
-        if cols[8].button("🗑️", key=f"delete_daily_{rid}", use_container_width=True, help="삭제"):
+        if action_cols_daily[1].button("🗑️", key=f"delete_daily_{rid}", help="삭제"):
             st.session_state["daily_pending_delete_id"] = row_data.get("id")
             st.rerun()
 
@@ -844,6 +844,7 @@ def render():
                         st.rerun()
                     else:
                         st.error("삭제 실패")
+
             with c2:
                 if st.button("아니오", key=f"daily_delete_no_{rid}", use_container_width=True):
                     st.session_state.pop("daily_pending_delete_id", None)
@@ -1026,8 +1027,8 @@ def render():
             elif inc_type in ("이체", "카드"):
                 income_etc += inc_amt
             elif inc_type == "미수":
-                # ✅ 미수도 금액 컬럼에 저장(기타입금)하되, 요약에서는 _is_receivable()로 제외 처리
-                income_etc += inc_amt
+                # ✅ 미수는 수익으로 잡지 말 것 → 수치 컬럼에는 넣지 않고 memo에만 남김(요약에서 제외됨)
+                pass
 
             # 지출1
             if e1_type == "현금":
@@ -1042,8 +1043,10 @@ def render():
                 exp_etc += e2_amt
 
             # ✅ 메모에 타입 메타 저장(기존 함수 사용)
-            # ✅ 사용자 비고(그대로)
+            # (미수금액까지 남기고 싶으면 사용자 메모에 자동으로 한 줄 덧붙임)
             memo_user = (add_memo_user or "").strip()
+            if inc_type == "미수" and inc_amt > 0:
+                memo_user = (memo_user + f" / 미수 {inc_amt:,}").strip(" /")
 
             memo_packed = _pack_memo(memo_user, inc_type, e1_type, e2_type)
 
@@ -1085,15 +1088,7 @@ def render():
                     if not reflected:
                         st.warning("일일결산은 저장됐지만, 진행업무 반영에 실패했습니다. (시트 헤더/권한/네트워크 확인)")
 
-                
-                # ✅ 홈(진행업무) 페이지 즉시 반영용: 세션 갱신
-                try:
-                    st.session_state[SESS_ACTIVE_TASKS_TEMP] = read_data_from_sheet(
-                        ACTIVE_TASKS_SHEET_NAME, default_if_empty=[]
-                    ) or []
-                except Exception:
-                    pass
-# ✅ 화면/요약 즉시 반영용
+                # ✅ 화면/요약 즉시 반영용
                 st.cache_data.clear()
                 st.success("추가 완료")
                 st.rerun()

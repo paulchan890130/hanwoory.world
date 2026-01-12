@@ -28,8 +28,6 @@ from pages.page_document import render as render_document_page
 from pages import page_scan
 from pages import page_completed
 
-from pages.page_quick_doc import render as render_quick_doc_page
-
 from config import RUN_ENV, TENANT_MODE
 
 # ==== OCR ====
@@ -93,7 +91,6 @@ from config import (
     PAGE_MONTHLY,
     PAGE_MANUAL,
     PAGE_DOCUMENT,
-    PAGE_QUICK_DOC,   # ✅ 이 줄 추가
     PAGE_COMPLETED,
     PAGE_SCAN,
     PAGE_ADMIN_ACCOUNTS,
@@ -578,7 +575,6 @@ def save_planned_tasks_to_sheet(tenant_id, data_list_of_dicts):
 
 # --- Active Task Functions ---
 @st.cache_data(ttl=300)
-
 def load_active_tasks_from_sheet(): 
     records = read_data_from_sheet(ACTIVE_TASKS_SHEET_NAME, default_if_empty=[])
     return [{
@@ -587,22 +583,17 @@ def load_active_tasks_from_sheet():
         'date': str(r.get('date','')),
         'name': str(r.get('name','')),
         'work': str(r.get('work','')),
+        'source_original': str(r.get('source_original', '')), # New field "원본"
         'details': str(r.get('details','')),
-        'transfer': str(r.get('transfer','0') or '0'),
-        'cash': str(r.get('cash','0') or '0'),
-        'card': str(r.get('card','0') or '0'),
-        'stamp': str(r.get('stamp','0') or '0'),
-        'receivable': str(r.get('receivable','0') or '0'),
-        'planned_expense': str(r.get('planned_expense', '0') or '0'),
-        'processed': r.get('processed', False) == True or str(r.get('processed', 'false')).lower() == 'true',
-        'processed_timestamp': str(r.get('processed_timestamp', ''))
+        'planned_expense': str(r.get('planned_expense', '0')),
+        'processed': r.get('processed', False) == True or str(r.get('processed', 'false')).lower() == 'true', # Ensure boolean
+        'processed_timestamp': str(r.get('processed_timestamp', '')) # Store as string, parse if needed
     } for r in records]
 
 def save_active_tasks_to_sheet(tenant_id, data_list_of_dicts):
     header = [
-        'id','category','date','name','work','details',
-        'transfer','cash','card','stamp','receivable',
-        'planned_expense','processed','processed_timestamp'
+        'id', 'category', 'date', 'name', 'work',
+        'source_original', 'details', 'planned_expense', 'processed', 'processed_timestamp'
     ]
     sheet_key = get_sheet_key_for_tenant(tenant_id)
     normalized = []
@@ -622,21 +613,23 @@ def save_active_tasks_to_sheet(tenant_id, data_list_of_dicts):
 
 # --- Completed Task Functions ---
 @st.cache_data(ttl=300) # Added cache
-
 def load_completed_tasks_from_sheet(): # Renamed
     records = read_data_from_sheet(COMPLETED_TASKS_SHEET_NAME, default_if_empty=[])
+    # Ensure all fields are strings and have defaults
     return [{
         'id': r.get('id', str(uuid.uuid4())),
         'category': str(r.get('category', '')),
         'date': str(r.get('date', '')),
         'name': str(r.get('name', '')),
         'work': str(r.get('work', '')),
+        'source_original': str(r.get('source_original', '')), # Added source_original
         'details': str(r.get('details', '')),
         'complete_date': str(r.get('complete_date', ''))
     } for r in records]
 
 def save_completed_tasks_to_sheet(tenant_id, records):
-    header = ['id','category','date','name','work','details','complete_date']
+    header = ['id', 'category', 'date', 'name', 'work',
+              'source_original', 'details', 'complete_date']
     sheet_key = get_sheet_key_for_tenant(tenant_id)
     normalized = []
     for r in records:
@@ -889,7 +882,6 @@ if st:
 
     with toolbar_col:
         toolbar_options = {
-            "⚡ 위임장(빠른작성)": PAGE_QUICK_DOC,
             "🏠 홈으로": PAGE_HOME,
             "🗒 메모장": PAGE_MEMO,
             "📚 업무": PAGE_REFERENCE,
@@ -916,9 +908,6 @@ if st:
             else:
                 if col.button(label, key=f"nav-{page_key}-{idx}", use_container_width=True):
                     st.session_state[SESS_CURRENT_PAGE] = page_key
-                    # ✅ 결산 페이지로 이동할 때는 날짜를 오늘로 초기화
-                    if page_key == PAGE_DAILY:
-                        st.session_state['daily_selected_date'] = datetime.date.today()
                     st.rerun()
 
     st.markdown("---") 
@@ -932,11 +921,6 @@ if st:
 
     if current_page_to_display == PAGE_CUSTOMER:
         render_customer_page()
-
-
-    elif current_page_to_display == PAGE_QUICK_DOC:
-        render_quick_doc_page()
-
 
     # -----------------------------
     # ✅ Daily Summary Page

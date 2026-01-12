@@ -119,6 +119,7 @@ PAGE_COMPLETED = 'completed'
 PAGE_SCAN = 'scan'
 PAGE_ADMIN_ACCOUNTS = 'admin_accounts'
 PAGE_BOARD = 'board'
+PAGE_QUICK_DOC = "quick_doc"
 
 # ===== 공용 헬퍼 =====
 def safe_int(val):
