@@ -40,7 +40,7 @@ from core.customer_service import (
 # -----------------------------
 
 def _ensure_tesseract() -> bool:
-    r"""Tesseract 실행파일 & pytesseract 연결 확인 (로컬/서버 겸용).
+    """Tesseract 실행파일 & pytesseract 연결 확인 (로컬/서버 겸용).
 
     - Windows: C:\Program Files\Tesseract-OCR\tesseract.exe 사용
     - Linux/서버(Render 등): PATH 에 있는 `tesseract` 사용
@@ -93,20 +93,6 @@ def _ocr(img, lang="kor", config=""):
         return ""
     try:
         return pytesseract.image_to_string(img, lang=lang, config=config) or ""
-    except Exception:
-        return ""
-
-def _fast_ocr(img, lang="kor", psm=7, whitelist=""):
-    """
-    빠른 OCR(짧은 영역/ROI/보강용)
-    """
-    if pytesseract is None or img is None:
-        return ""
-    cfg = f"--oem 3 --psm {psm}"
-    if whitelist:
-        cfg += f" -c tessedit_char_whitelist={whitelist}"
-    try:
-        return pytesseract.image_to_string(img, lang=lang, config=cfg) or ""
     except Exception:
         return ""
 
@@ -273,8 +259,7 @@ def _parse_mrz_pair(L1: str, L2: str) -> dict:
     b = re.sub(r"[^0-9]", "", L2[13:19])
     if len(b) == 6:
         yy, mm, dd = int(b[:2]), int(b[2:4]), int(b[4:6])
-        now_yy = _dt.now().year % 100
-        yy = (1900 + yy) if yy > now_yy else (2000 + yy)
+        yy += 2000 if yy < 80 else 1900
         try:
             out["생년월일"] = _dt(yy, mm, dd).strftime("%Y-%m-%d")
         except Exception:
@@ -496,7 +481,6 @@ def parse_arc(img, fast: bool = False):
     out = {}
     if img is None:
         return out
-    img_orig = img  # ✅ fast 리사이즈 전 원본 보관(보강용)
 
     # 🔹 FAST 모드일 때만: 등록증 이미지 리사이즈 (한 변 최대 1600px)
     if fast:
@@ -523,12 +507,6 @@ def parse_arc(img, fast: bool = False):
         t_top = ""
     tn_top = t_top
 
-
-    # ✅ 체류자격(V) 자동 추출 (예: F-6, E-7, D-2 등)
-    m_v = re.search(r'\b([A-Z]{1,2}\-\d{1,2})\b', (tn_top or "").upper())
-    if m_v:
-        out["V"] = m_v.group(1)
-
     # 등록증 앞6/뒤7
     # 등록증 앞6/뒤7
     # 등록증 앞6/뒤7
@@ -538,15 +516,6 @@ def parse_arc(img, fast: bool = False):
     pair = re.search(r'(?<!\d)(\d{6})\D{0,20}(\d{7})(?!\d)', t_dense)
     if pair:
         out["등록증"], out["번호"] = pair.group(1), pair.group(2)
-
-    # ✅ FAST 보강(최소): 등록증/번호가 비었을 때만 상단 숫자만 1회 추가 OCR 후 재시도
-    if fast and ((not out.get("등록증")) or (not out.get("번호"))):
-        t_top2 = _fast_ocr(_binarize(top), lang="eng", psm=7, whitelist="0123456789")
-        if t_top2:
-            t_dense2 = re.sub(r'(?<=\d)\s+(?=\d)', '', (tn_top or "") + "\n" + (t_top2 or ""))
-            pair2 = re.search(r'(?<!\d)(\d{6})\D{0,20}(\d{7})(?!\d)', t_dense2)
-            if pair2:
-                out["등록증"], out["번호"] = pair2.group(1), pair2.group(2)
 
     # 2차: fallback – 앞 6자리만 잡혔거나, 아직 번호가 비어 있으면
     if not out.get("등록증"):
@@ -648,7 +617,7 @@ def parse_arc(img, fast: bool = False):
                 int(w * 0.95),  # right
                 int(h * 0.70),  # bottom
             ))
-            txt = _fast_ocr(_pre(roi), lang="kor", psm=7)
+            txt = _fast_ocr(roi, lang="kor", psm=7)
             m = re.search(r"[가-힣]{2,4}", txt)
             if m:
                 return m.group(0)
@@ -658,33 +627,23 @@ def parse_arc(img, fast: bool = False):
         return _extract_name_from_text(text_top)
 
     # --- 이름 추출 ---
+    # --- 이름 추출 (ROI 우선 + 텍스트 보조) ---
     name_ko = _extract_kor_name_strict(t_top)
-    if not name_ko:
-        # ✅ 상단이 정렬돼도, 스티커/손글씨는 ROI가 더 잘 잡히는 경우가 많음
-        name_ko = _extract_name_from_roi(img, t_top)
 
     if name_ko:
         out["한글"] = name_ko
 
-
+    # 하단(만기/주소)
     best_text, best_sc = "", -1
     for deg in (0, 90, 270):
-        im = bot if deg == 0 else bot.rotate(deg, expand=True)
-
+        im = bot.rotate(deg, expand=True)
         t1 = _ocr(ImageOps.grayscale(im), lang="kor", config="--oem 3 --psm 6")
         t2 = _ocr(ImageOps.grayscale(im), lang="kor", config="--oem 3 --psm 4")
         t = (t1 + "\n" + t2)
-
         sc = _kor_count(t)
         if sc > best_sc:
             best_sc, best_text = sc, t
-
-        # ✅ FAST면 0도에서 한글이 충분히 나오면 더 안 돌림(속도↑)
-        if fast and deg == 0 and sc >= 25:
-            break
-
     tn_bot = best_text
-
 
     # 🔚 만기일: 하단에서 발견된 "모든 날짜" 중 가장 늦은 날짜를 선택
     expiry = _pick_labeled_date(
@@ -816,18 +775,6 @@ def parse_arc(img, fast: bool = False):
             if best_line:
                 out["주소"] = best_line
 
-    # ✅ FAST 자동 보강: 핵심 값이 2개 이상 비면 fast=False로 1회 보강(원본 사용)
-    if fast:
-        missing = sum(1 for k in ("등록증", "번호", "만기일") if not out.get(k))
-        if missing >= 2:
-            try:
-                out2 = parse_arc(img_orig, fast=False)
-                # 빈칸만 채우기 (1차 결과 우선)
-                for k, v in out2.items():
-                    if (not out.get(k)) and v:
-                        out[k] = v
-            except Exception:
-                pass
 
     return out
 
@@ -979,7 +926,6 @@ def render():
         setk("발급일",   a.get("발급일"))
         setk("만기일",   a.get("만기일"))
         setk("주소",     a.get("주소"))
-        setk("V",        a.get("V"))
 
         # 여권 생년월일로 등록증 앞자리 채우기
         birth = (p.get("생년월일") or "").strip()

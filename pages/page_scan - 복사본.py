@@ -40,7 +40,7 @@ from core.customer_service import (
 # -----------------------------
 
 def _ensure_tesseract() -> bool:
-    r"""Tesseract 실행파일 & pytesseract 연결 확인 (로컬/서버 겸용).
+    """Tesseract 실행파일 & pytesseract 연결 확인 (로컬/서버 겸용).
 
     - Windows: C:\Program Files\Tesseract-OCR\tesseract.exe 사용
     - Linux/서버(Render 등): PATH 에 있는 `tesseract` 사용
@@ -273,8 +273,7 @@ def _parse_mrz_pair(L1: str, L2: str) -> dict:
     b = re.sub(r"[^0-9]", "", L2[13:19])
     if len(b) == 6:
         yy, mm, dd = int(b[:2]), int(b[2:4]), int(b[4:6])
-        now_yy = _dt.now().year % 100
-        yy = (1900 + yy) if yy > now_yy else (2000 + yy)
+        yy += 2000 if yy < 80 else 1900
         try:
             out["생년월일"] = _dt(yy, mm, dd).strftime("%Y-%m-%d")
         except Exception:
@@ -523,9 +522,18 @@ def parse_arc(img, fast: bool = False):
         t_top = ""
     tn_top = t_top
 
+    # ✅ FAST 상단 보강: 6+7 패턴이 안 보이면 숫자 위주로 2번만 더 시도
+    if fast:
+        t_dense_chk = re.sub(r'(?<=\d)\s+(?=\d)', '', t_top or "")
+        has_pair = re.search(r'(?<!\d)\d{6}\D{0,20}\d{7}(?!\d)', t_dense_chk) is not None
+        if not has_pair:
+            t_top2 = _fast_ocr(_binarize(top), lang="kor+eng", psm=7, whitelist="0123456789")
+            t_top3 = _fast_ocr(_pre(top),      lang="kor+eng", psm=6, whitelist="0123456789")
+            t_top = (t_top or "") + "\n" + (t_top2 or "") + "\n" + (t_top3 or "")
+            tn_top = t_top
 
     # ✅ 체류자격(V) 자동 추출 (예: F-6, E-7, D-2 등)
-    m_v = re.search(r'\b([A-Z]{1,2}\-\d{1,2})\b', (tn_top or "").upper())
+    m_v = re.search(r'\b([A-Z]{1,2}\-\d{1,2})\b', (t_top or "").upper())
     if m_v:
         out["V"] = m_v.group(1)
 
@@ -538,15 +546,6 @@ def parse_arc(img, fast: bool = False):
     pair = re.search(r'(?<!\d)(\d{6})\D{0,20}(\d{7})(?!\d)', t_dense)
     if pair:
         out["등록증"], out["번호"] = pair.group(1), pair.group(2)
-
-    # ✅ FAST 보강(최소): 등록증/번호가 비었을 때만 상단 숫자만 1회 추가 OCR 후 재시도
-    if fast and ((not out.get("등록증")) or (not out.get("번호"))):
-        t_top2 = _fast_ocr(_binarize(top), lang="eng", psm=7, whitelist="0123456789")
-        if t_top2:
-            t_dense2 = re.sub(r'(?<=\d)\s+(?=\d)', '', (tn_top or "") + "\n" + (t_top2 or ""))
-            pair2 = re.search(r'(?<!\d)(\d{6})\D{0,20}(\d{7})(?!\d)', t_dense2)
-            if pair2:
-                out["등록증"], out["번호"] = pair2.group(1), pair2.group(2)
 
     # 2차: fallback – 앞 6자리만 잡혔거나, 아직 번호가 비어 있으면
     if not out.get("등록증"):
@@ -648,7 +647,7 @@ def parse_arc(img, fast: bool = False):
                 int(w * 0.95),  # right
                 int(h * 0.70),  # bottom
             ))
-            txt = _fast_ocr(_pre(roi), lang="kor", psm=7)
+            txt = _fast_ocr(roi, lang="kor", psm=7)
             m = re.search(r"[가-힣]{2,4}", txt)
             if m:
                 return m.group(0)
@@ -818,7 +817,7 @@ def parse_arc(img, fast: bool = False):
 
     # ✅ FAST 자동 보강: 핵심 값이 2개 이상 비면 fast=False로 1회 보강(원본 사용)
     if fast:
-        missing = sum(1 for k in ("등록증", "번호", "만기일") if not out.get(k))
+        missing = sum(1 for k in ("등록증", "번호", "만기일", "주소", "한글") if not out.get(k))
         if missing >= 2:
             try:
                 out2 = parse_arc(img_orig, fast=False)
