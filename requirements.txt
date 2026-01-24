@@ -9,7 +9,7 @@ Pillow
 pytesseract
 requests
 pymupdf
+opencv-python-headless
 streamlit-calendar
 holidays
 streamlit-aggrid
-
