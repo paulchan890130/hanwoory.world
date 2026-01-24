@@ -9,6 +9,8 @@ from datetime import datetime as _dt, timedelta as _td
 import streamlit as st
 from PIL import Image, ImageOps, ImageFilter, ImageStat, Image as _PILImage
 
+from utils.mrz_pipeline import extract_mrz_fields
+
 try:
     import pytesseract
 except Exception:
@@ -546,7 +548,7 @@ def _passport_payload(out: dict) -> dict:
     }
 
 
-def parse_passport(img):
+def _parse_passport_legacy(img):
     """
     TD3 여권: 국가/방향/상하좌우 편차를 감안하여 MRZ 2줄을 우선 추출.
     - 속도 보호: 큰 이미지는 축소 + 시도 예산(회전×상하좌우 후보) 내 조기 종료
@@ -643,6 +645,36 @@ def parse_passport(img):
         return _passport_payload(best)
 
     return {}
+
+
+def parse_passport(img):
+    """
+    신규 MRZ 파이프라인 우선 적용 후 실패 시 레거시 경로 사용.
+    반환:
+      {'성','명','여권','발급','만기','생년월일','국가','성별'}
+    """
+    if img is None:
+        return {}
+
+    result = extract_mrz_fields(img, time_budget_sec=3.5)
+    st.session_state["passport_mrz_debug"] = result.get("debug", {})
+
+    if result.get("ok"):
+        fields = result.get("fields", {})
+        return _passport_payload(
+            {
+                "성": fields.get("surname", ""),
+                "명": fields.get("given_names", ""),
+                "여권": fields.get("passport_no", ""),
+                "발급": "",
+                "만기": fields.get("expiry_formatted", ""),
+                "국가": fields.get("nationality", ""),
+                "성별": "남" if fields.get("sex") == "M" else ("여" if fields.get("sex") == "F" else ""),
+                "생년월일": fields.get("dob_formatted", ""),
+            }
+        )
+
+    return _parse_passport_legacy(img)
 
 
 # 등록증(ARC) 관련 보조 정규식/함수들 (사용하던 버전 그대로)
@@ -1117,6 +1149,8 @@ def render():
 
     # MRZ/ARC 원문 + 파싱 결과 디버그
     if show_debug:
+        with st.expander("🧪 여권 MRZ 디버그"):
+            st.json(st.session_state.get("passport_mrz_debug", {}))
         if img_p is not None:
             with st.expander("🔎 여권 MRZ 원문 샘플"):
                 w, h = img_p.size
