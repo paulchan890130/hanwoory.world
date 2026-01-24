@@ -533,7 +533,7 @@ def _extract_name_from_mrz_text(raw: str) -> dict:
     return {"성": _clean(m.group(1)), "명": _clean(m.group(2))}
 
 
-def _parse_passport_legacy(img):
+def parse_passport(img):
     """
     TD3 여권: 국가/방향/상하좌우 편차를 감안하여 MRZ 2줄을 우선 추출.
     - 속도 보호: 큰 이미지는 축소 + 시도 예산(회전×상하좌우 후보) 내 조기 종료
@@ -646,9 +646,6 @@ def _parse_passport_legacy(img):
             "성별":     best.get("성별", ""),
             "생년월일": best.get("생년월일", ""),
         }
-
-    return {}
-
 
 def parse_passport(img):
     """
