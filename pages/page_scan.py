@@ -672,6 +672,9 @@ def parse_passport(img):
             except Exception:
                 return ""
 
+        sex = fields.get("sex", "")
+        sex_kr = "남" if sex == "M" else ("여" if sex == "F" else "")
+
         return _passport_payload(
             {
                 "성": fields.get("surname", ""),
@@ -680,12 +683,13 @@ def parse_passport(img):
                 "발급": "",
                 "만기": _fmt_date(fields.get("expiry_raw", "")),
                 "국가": fields.get("nationality", ""),
-                "성별": fields.get("sex", ""),
+                "성별": sex_kr,
                 "생년월일": _fmt_date(fields.get("dob_raw", "")),
             }
         )
 
     return _parse_passport_legacy(img)
+
 
 
 # 등록증(ARC) 관련 보조 정규식/함수들 (사용하던 버전 그대로)

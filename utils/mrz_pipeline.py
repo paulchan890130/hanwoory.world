@@ -20,17 +20,19 @@ from PIL import Image
 _OCR_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"
 _OCR_CONFIG = f"--oem 1 --psm 6 -c tessedit_char_whitelist={_OCR_WHITELIST}"
 
-
 def _to_gray(img: Union[Image.Image, np.ndarray]) -> np.ndarray:
+    # PIL -> RGB
     if isinstance(img, Image.Image):
-        arr = np.array(img)  # RGB
-    else:
-        arr = img
-    if arr.ndim == 3:
-        # If ndarray is BGR (OpenCV), this still works reasonably for gray conversion
-        return cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY) if arr.shape[2] == 3 else arr[:, :, 0]
-    return arr
+        arr = np.array(img)
+        if arr.ndim == 3:
+            return cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+        return arr
 
+    # ndarray(OpenCV) -> BGR or gray
+    arr = img
+    if isinstance(arr, np.ndarray) and arr.ndim == 3:
+        return cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+    return arr
 
 def _resize_preview(gray: np.ndarray, long_side: int = 1100, max_side: int = 1200) -> Tuple[np.ndarray, float]:
     h, w = gray.shape[:2]
