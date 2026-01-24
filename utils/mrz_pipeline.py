@@ -1,12 +1,8 @@
-"""MRZ extraction pipeline using ROI-only OCR (OCR-B + ENG).
-
-This module exposes extract_mrz_fields for TD3 passports. It avoids full-image OCR
-and limits OCR attempts to ROI candidates within a time budget.
-"""
+"""MRZ extraction pipeline (ROI-only, B-hybrid)."""
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Union
 
 import cv2
 import numpy as np
@@ -14,221 +10,273 @@ import pytesseract
 from PIL import Image
 
 
-_OCR_CONFIG = "--oem 1 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"
+_OCR_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"
+_OCR_CONFIG = f"--oem 1 --psm 6 -c tessedit_char_whitelist={_OCR_WHITELIST}"
 
 
-def _to_gray(pil_rgb: Image.Image) -> np.ndarray:
-    arr = np.array(pil_rgb)
+def _to_gray(img: Union[Image.Image, np.ndarray]) -> np.ndarray:
+    if isinstance(img, Image.Image):
+        arr = np.array(img)
+    else:
+        arr = img
     if arr.ndim == 3:
         return cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
     return arr
 
 
-def _rotate(gray: np.ndarray, degrees: int) -> np.ndarray:
-    if degrees == 0:
+def _resize_preview(gray: np.ndarray) -> Tuple[np.ndarray, float]:
+    h, w = gray.shape[:2]
+    max_side = max(h, w)
+    target = 1100
+    max_target = 1200
+    if max_side <= max_target:
+        return gray, 1.0
+    scale = min(max_target / float(max_side), target / float(max_side))
+    resized = cv2.resize(gray, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    return resized, scale
+
+
+def _rotate(gray: np.ndarray, rotation: int) -> np.ndarray:
+    if rotation == 0:
         return gray
-    if degrees == 90:
+    if rotation == 90:
         return cv2.rotate(gray, cv2.ROTATE_90_CLOCKWISE)
-    if degrees == 180:
+    if rotation == 180:
         return cv2.rotate(gray, cv2.ROTATE_180)
-    if degrees == 270:
+    if rotation == 270:
         return cv2.rotate(gray, cv2.ROTATE_90_COUNTERCLOCKWISE)
     return gray
 
 
-def _candidate_bands(gray: np.ndarray) -> List[Tuple[int, int, int, int, str]]:
+def _find_candidates(gray: np.ndarray) -> Tuple[List[Tuple[int, int, int, int, float, float]], Dict[str, float]]:
+    t0 = time.monotonic()
     h, w = gray.shape[:2]
-    bands = []
-    # Bottom-heavy heuristic bands (MRZ usually near bottom)
-    for ratio in (0.35, 0.45):
-        y0 = int(h * (1 - ratio))
-        bands.append((0, y0, w, h - y0, f"bottom_{int(ratio * 100)}"))
-
-    # Edge-density band detection (hybrid)
-    blur = cv2.GaussianBlur(gray, (3, 3), 0)
-    grad_x = cv2.Sobel(blur, cv2.CV_16S, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(blur, cv2.CV_16S, 0, 1, ksize=3)
-    abs_grad = cv2.convertScaleAbs(cv2.addWeighted(grad_x, 1.0, grad_y, 0.5, 0))
-    _, thr = cv2.threshold(abs_grad, 0, 255, cv2.THRESH_OTSU)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
-    morph = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, kernel, iterations=1)
-    contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        best = max(contours, key=cv2.contourArea)
-        x, y, bw, bh = cv2.boundingRect(best)
-        # Expand a bit to include full MRZ lines
-        pad_y = int(bh * 0.3)
-        y0 = max(y - pad_y, 0)
-        y1 = min(y + bh + pad_y, h)
-        bands.append((0, y0, w, y1 - y0, "edge_density"))
-
-    return bands
-
-
-def _prep_roi(gray: np.ndarray) -> np.ndarray:
-    # Normalize contrast and binarize
-    norm = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
-    thr = cv2.adaptiveThreshold(
-        norm,
-        255,
-        cv2.ADAPTIVE_THRESH_MEAN_C,
-        cv2.THRESH_BINARY,
-        31,
-        10,
+    blackhat = cv2.morphologyEx(
+        gray,
+        cv2.MORPH_BLACKHAT,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15)),
+        iterations=1,
     )
-    return thr
+    blur = cv2.GaussianBlur(blackhat, (3, 3), 0)
+    _, thr = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    k1_w = max(15, int(w * 0.03))
+    k2_w = max(20, int(w * 0.05))
+    k1 = cv2.getStructuringElement(cv2.MORPH_RECT, (k1_w, 3))
+    k2 = cv2.getStructuringElement(cv2.MORPH_RECT, (k2_w, 5))
+    closed = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, k1, iterations=1)
+    closed = cv2.morphologyEx(closed, cv2.MORPH_CLOSE, k2, iterations=1)
+
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates: List[Tuple[int, int, int, int, float, float]] = []
+    area_total = float(h * w)
+    for cnt in contours:
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        aspect = bw / float(bh + 1e-6)
+        area = bw * bh
+        if aspect < 6:
+            continue
+        if bh < h * 0.02 or bh > h * 0.25:
+            continue
+        if area < area_total * 0.003:
+            continue
+        roi = thr[y : y + bh, x : x + bw]
+        ink = float(np.count_nonzero(roi == 0)) / float(area + 1e-6)
+        score = aspect + (ink * 3.0) + (area / area_total)
+        candidates.append((x, y, bw, bh, score, ink))
+
+    candidates.sort(key=lambda c: c[4], reverse=True)
+    candidates = candidates[:3]
+    timing = {"t_find": round(time.monotonic() - t0, 4)}
+    return candidates, timing
 
 
-def _ocr_roi(roi: np.ndarray) -> str:
-    return pytesseract.image_to_string(roi, lang="ocrb+eng", config=_OCR_CONFIG)
-
-
-def _clean_mrz_lines(raw: str) -> List[str]:
-    lines = [line.strip().replace(" ", "") for line in raw.splitlines()]
-    lines = [line for line in lines if len(line) >= 20]
-    lines = ["".join(ch for ch in line if ch.isalnum() or ch == "<") for line in lines]
+def _clean_lines(raw: str) -> List[str]:
+    lines = []
+    for line in raw.splitlines():
+        line = "".join(ch for ch in line.strip().upper() if ch.isalnum() or ch == "<")
+        if len(line) >= 30:
+            lines.append(line)
     return lines
 
 
-def _pick_mrz_pair(lines: List[str]) -> Tuple[str, str]:
+def _score_pair(l1: str, l2: str) -> float:
+    if not (40 <= len(l1) <= 50 and 40 <= len(l2) <= 50):
+        return -1.0
+    score = l1.count("<") + l2.count("<")
+    if l1.startswith("P<"):
+        score += 5
+    return float(score)
+
+
+def _pick_mrz(lines: List[str]) -> Tuple[str, str]:
+    best_score = -1.0
     best = ("", "")
-    best_score = -1
     for i in range(len(lines) - 1):
         l1, l2 = lines[i], lines[i + 1]
-        if len(l1) >= 30 and len(l2) >= 30:
-            score = l1.count("<") + l2.count("<")
-            if score > best_score:
-                best = (l1[:44], l2[:44])
-                best_score = score
+        score = _score_pair(l1, l2)
+        if score > best_score:
+            best_score = score
+            best = (l1, l2)
+    if best_score < 0:
+        return ("", "")
     return best
 
 
+def _pad_44(line: str) -> str:
+    if len(line) >= 44:
+        return line[:44]
+    return line.ljust(44, "<")
+
+
 def _parse_td3(l1: str, l2: str) -> Dict[str, str]:
-    def clean_name(block: str) -> str:
-        return " ".join([p for p in block.replace("<", " ").split() if p])
-
-    surname = ""
-    given_names = ""
-    if l1.startswith("P<") and "<<" in l1:
-        name_part = l1[5:44]
-        parts = name_part.split("<<")
-        surname = clean_name(parts[0])
-        given_names = clean_name(parts[1]) if len(parts) > 1 else ""
-
+    l1 = _pad_44(l1)
+    l2 = _pad_44(l2)
+    name_block = l1[5:44]
+    parts = name_block.split("<<")
+    surname = parts[0].replace("<", " ").strip()
+    given = parts[1].replace("<", " ").strip() if len(parts) > 1 else ""
     passport_no = l2[0:9].replace("<", "").strip()
     nationality = l2[10:13].replace("<", "").strip()
-    dob = l2[13:19]
-    sex = l2[20:21].replace("<", "").strip()
-    expiry = l2[21:27]
-
+    dob_raw = l2[13:19]
+    sex = l2[20]
+    expiry_raw = l2[21:27]
     return {
         "passport_no": passport_no,
         "nationality": nationality,
-        "dob_raw": dob,
-        "expiry_raw": expiry,
+        "dob_raw": dob_raw,
         "sex": sex,
+        "expiry_raw": expiry_raw,
         "surname": surname,
-        "given_names": given_names,
+        "given_names": given,
     }
 
 
-def _format_date_yyMMdd(raw: str, kind: str) -> str:
-    if len(raw) != 6 or not raw.isdigit():
-        return ""
-    yy = int(raw[0:2])
-    mm = raw[2:4]
-    dd = raw[4:6]
-    now = time.gmtime().tm_year % 100
-    if kind == "expiry":
-        century = 2000 if yy <= now + 10 else 1900
-    else:
-        century = 1900 if yy > now else 2000
-    return f"{century + yy:04d}-{mm}-{dd}"
+def _valid_date(raw: str) -> bool:
+    return len(raw) == 6 and raw.isdigit()
 
 
-def extract_mrz_fields(pil_rgb: Image.Image, time_budget_sec: float = 3.5) -> Dict[str, object]:
-    """Extract TD3 MRZ fields from a PIL RGB image.
+def extract_mrz_fields(pil_or_ndarray: Union[Image.Image, np.ndarray], time_budget_sec: float = 3.5) -> Dict[str, Any]:
+    """Extract MRZ fields from a PIL image or ndarray.
 
-    Returns a dict with required fields plus debug metadata.
+    Returns: {ok, mrz_lines, fields, debug}
     """
-    start = time.monotonic()
+    t0 = time.monotonic()
     debug = {
         "method": "B-hybrid",
         "rotation": None,
-        "reason": "",
         "candidates": [],
-        "timing": {},
+        "timing": {"t_total": 0.0, "t_find": 0.0, "t_ocr": 0.0},
     }
+    fields: Dict[str, str] = {}
 
-    if pil_rgb is None:
-        debug["reason"] = "no-image"
-        return {
-            "passport_no": "",
-            "nationality": "",
-            "dob_formatted": "",
-            "expiry_formatted": "",
-            "sex": "",
-            "surname": "",
-            "given_names": "",
-            "debug": debug,
-        }
+    gray = _to_gray(pil_or_ndarray)
+    preview, scale = _resize_preview(gray)
 
-    gray = _to_gray(pil_rgb)
     ocr_calls = 0
-    best_fields: Dict[str, str] = {}
-
-    for rotation in (0, 90, 270, 180):
-        if time.monotonic() - start > time_budget_sec:
-            debug["reason"] = "time-budget"
+    for rotation in (0, 90, 180, 270):
+        if time.monotonic() - t0 > time_budget_sec:
             break
+        rot = _rotate(preview, rotation)
+        candidates, timing = _find_candidates(rot)
+        debug["timing"]["t_find"] += timing["t_find"]
 
-        rot_gray = _rotate(gray, rotation)
-        candidates = _candidate_bands(rot_gray)
-        debug["candidates"].extend(
-            {"rotation": rotation, "tag": tag, "bbox": [x, y, w, h]}
-            for x, y, w, h, tag in candidates
-        )
+        for x, y, w, h, score, ink in candidates:
+            debug["candidates"].append(
+                {"bbox": [int(x), int(y), int(w), int(h)], "score": score, "aspect": w / float(h), "ink": ink}
+            )
 
-        for x, y, w, h, tag in candidates:
-            if ocr_calls >= 4:
-                debug["reason"] = "ocr-limit"
+        if rotation == 0 and candidates:
+            pass
+        elif rotation == 0 and not candidates:
+            continue
+
+        if not candidates:
+            continue
+
+        debug["rotation"] = rotation
+        for x, y, w, h, score, ink in candidates:
+            if ocr_calls >= 4 or time.monotonic() - t0 > time_budget_sec:
                 break
-            if time.monotonic() - start > time_budget_sec:
-                debug["reason"] = "time-budget"
-                break
 
-            roi = rot_gray[y : y + h, x : x + w]
-            prep = _prep_roi(roi)
-            raw = _ocr_roi(prep)
+            roi = rot[y : y + h, x : x + w]
+            t_ocr = time.monotonic()
+            try:
+                raw = pytesseract.image_to_string(
+                    roi,
+                    lang="ocrb",
+                    config=_OCR_CONFIG,
+                    timeout=1.2,
+                )
+            except Exception:
+                try:
+                    raw = pytesseract.image_to_string(
+                        roi,
+                        lang="ocrb+eng",
+                        config=_OCR_CONFIG,
+                        timeout=1.2,
+                    )
+                except Exception:
+                    raw = ""
+            debug["timing"]["t_ocr"] += round(time.monotonic() - t_ocr, 4)
             ocr_calls += 1
 
-            lines = _clean_mrz_lines(raw)
-            l1, l2 = _pick_mrz_pair(lines)
+            lines = _clean_lines(raw)
+            l1, l2 = _pick_mrz(lines)
             if l1 and l2:
+                l1 = _pad_44(l1)
+                l2 = _pad_44(l2)
                 fields = _parse_td3(l1, l2)
-                fields["dob_formatted"] = _format_date_yyMMdd(fields.pop("dob_raw"), "dob")
-                fields["expiry_formatted"] = _format_date_yyMMdd(fields.pop("expiry_raw"), "expiry")
-                debug["rotation"] = rotation
-                debug["reason"] = f"match:{tag}"
-                debug["timing"]["elapsed"] = round(time.monotonic() - start, 4)
-                return {**fields, "debug": debug}
+                ok = (
+                    len(fields.get("passport_no", "")) >= 7
+                    and _valid_date(fields.get("dob_raw", ""))
+                    and _valid_date(fields.get("expiry_raw", ""))
+                )
+                debug["timing"]["t_total"] = round(time.monotonic() - t0, 4)
+                return {
+                    "ok": ok,
+                    "mrz_lines": [l1, l2],
+                    "fields": fields,
+                    "debug": debug,
+                }
 
-            best_fields = best_fields or {}
+            if ocr_calls >= 4 or time.monotonic() - t0 > time_budget_sec:
+                break
 
-        if debug.get("reason") == "ocr-limit":
+            t_ocr = time.monotonic()
+            try:
+                raw = pytesseract.image_to_string(
+                    roi,
+                    lang="eng",
+                    config=_OCR_CONFIG,
+                    timeout=1.2,
+                )
+            except Exception:
+                raw = ""
+            debug["timing"]["t_ocr"] += round(time.monotonic() - t_ocr, 4)
+            ocr_calls += 1
+
+            lines = _clean_lines(raw)
+            l1, l2 = _pick_mrz(lines)
+            if l1 and l2:
+                l1 = _pad_44(l1)
+                l2 = _pad_44(l2)
+                fields = _parse_td3(l1, l2)
+                ok = (
+                    len(fields.get("passport_no", "")) >= 7
+                    and _valid_date(fields.get("dob_raw", ""))
+                    and _valid_date(fields.get("expiry_raw", ""))
+                )
+                debug["timing"]["t_total"] = round(time.monotonic() - t0, 4)
+                return {
+                    "ok": ok,
+                    "mrz_lines": [l1, l2],
+                    "fields": fields,
+                    "debug": debug,
+                }
+
+        if rotation == 0 and candidates:
             break
 
-    debug["timing"]["elapsed"] = round(time.monotonic() - start, 4)
-    if not debug["reason"]:
-        debug["reason"] = "no-match"
-
-    return {
-        "passport_no": "",
-        "nationality": "",
-        "dob_formatted": "",
-        "expiry_formatted": "",
-        "sex": "",
-        "surname": "",
-        "given_names": "",
-        "debug": debug,
-    }
+    debug["timing"]["t_total"] = round(time.monotonic() - t0, 4)
+    return {"ok": False, "mrz_lines": [], "fields": {}, "debug": debug}

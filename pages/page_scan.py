@@ -658,19 +658,30 @@ def parse_passport(img):
 
     result = extract_mrz_fields(img, time_budget_sec=3.5)
     st.session_state["passport_mrz_debug"] = result.get("debug", {})
-
     if result.get("ok"):
         fields = result.get("fields", {})
+
+        def _fmt_date(raw: str) -> str:
+            raw = re.sub(r"[^0-9]", "", raw or "")
+            if len(raw) != 6:
+                return ""
+            yy, mm, dd = int(raw[:2]), int(raw[2:4]), int(raw[4:6])
+            yy += 2000 if yy < 80 else 1900
+            try:
+                return _dt(yy, mm, dd).strftime("%Y-%m-%d")
+            except Exception:
+                return ""
+
         return _passport_payload(
             {
                 "성": fields.get("surname", ""),
                 "명": fields.get("given_names", ""),
                 "여권": fields.get("passport_no", ""),
                 "발급": "",
-                "만기": fields.get("expiry_formatted", ""),
+                "만기": _fmt_date(fields.get("expiry_raw", "")),
                 "국가": fields.get("nationality", ""),
                 "성별": "남" if fields.get("sex") == "M" else ("여" if fields.get("sex") == "F" else ""),
-                "생년월일": fields.get("dob_formatted", ""),
+                "생년월일": _fmt_date(fields.get("dob_raw", "")),
             }
         )
 
