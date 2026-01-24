@@ -534,6 +534,7 @@ def _extract_name_from_mrz_text(raw: str) -> dict:
 
 
 def _passport_payload(out: dict) -> dict:
+    """여권 OCR 파싱 결과를 공통 포맷으로 정규화."""
     return {
         "성":       out.get("성", ""),
         "명":       out.get("명", ""),
