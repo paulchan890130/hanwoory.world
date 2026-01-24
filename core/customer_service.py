@@ -282,7 +282,7 @@ def upsert_customer_from_scan(
     """
     OCR 결과를 기반으로 고객 데이터를 추가/수정.
 
-    passport_info: {"성","명","여권","발급","만기"}
+    passport_info: {"성","명","성별","국가","여권","발급","만기"}
     arc_info     : {"한글","등록증","번호","발급일","만기일","주소"}
     extra_info   : {"연","락","처","V"}  (없으면 무시)
     """
@@ -327,7 +327,7 @@ def upsert_customer_from_scan(
     to_update: dict[str, str] = {}
 
     # 여권 정보
-    for k in ["성", "명", "여권", "발급", "만기"]:
+    for k in ["성", "명", "성별", "국가", "여권", "발급", "만기"]:
         v = norm(passport_info.get(k))
         if v:
             to_update[k] = v
