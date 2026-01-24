@@ -658,21 +658,19 @@ def parse_passport(img):
 
     result = extract_mrz_fields(img, time_budget_sec=3.5)
     st.session_state["passport_mrz_debug"] = result.get("debug", {})
-    ok = any(
-        result.get(k)
-        for k in ("passport_no", "dob_formatted", "expiry_formatted", "surname", "given_names")
-    )
-    if ok:
+
+    if result.get("ok"):
+        fields = result.get("fields", {})
         return _passport_payload(
             {
-                "성": result.get("surname", ""),
-                "명": result.get("given_names", ""),
-                "여권": result.get("passport_no", ""),
+                "성": fields.get("surname", ""),
+                "명": fields.get("given_names", ""),
+                "여권": fields.get("passport_no", ""),
                 "발급": "",
-                "만기": result.get("expiry_formatted", ""),
-                "국가": result.get("nationality", ""),
-                "성별": result.get("sex", ""),
-                "생년월일": result.get("dob_formatted", ""),
+                "만기": fields.get("expiry_formatted", ""),
+                "국가": fields.get("nationality", ""),
+                "성별": "남" if fields.get("sex") == "M" else ("여" if fields.get("sex") == "F" else ""),
+                "생년월일": fields.get("dob_formatted", ""),
             }
         )
 
