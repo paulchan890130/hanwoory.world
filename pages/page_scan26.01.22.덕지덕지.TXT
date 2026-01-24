@@ -1,0 +1,665 @@
+
+# pages/page_scan.py
+# ✅ Passport-first MRZ extraction (RapidOCR + checksum) with robust ROI detection.
+# - Focus: English name / DOB / Nationality / Sex from passport
+# - ARC is optional (2nd priority)
+
+import os
+import re
+import platform
+from datetime import datetime as _dt, timedelta as _td
+
+import streamlit as st
+from PIL import Image, ImageOps
+
+# Optional deps
+try:
+    import numpy as np
+except Exception:
+    np = None
+
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
+try:
+    import fitz  # PyMuPDF
+except Exception:
+    fitz = None
+
+# RapidOCR import (supports multiple package names)
+RapidOCR = None
+try:
+    from rapidocr_onnxruntime import RapidOCR as _RapidOCR
+    RapidOCR = _RapidOCR
+except Exception:
+    try:
+        from rapidocr import RapidOCR as _RapidOCR
+        RapidOCR = _RapidOCR
+    except Exception:
+        RapidOCR = None
+
+# Project imports
+from config import (
+    SESS_CURRENT_PAGE,
+    PAGE_CUSTOMER,
+)
+from core.customer_service import (
+    upsert_customer_from_scan,
+)
+
+# ------------------------------------------------------------
+# PDF / Image loader
+# ------------------------------------------------------------
+def open_image_safe(uploaded_file, pdf_page_index: int = 0) -> Image.Image | None:
+    if uploaded_file is None:
+        return None
+
+    name = getattr(uploaded_file, "name", "") or ""
+    mime = getattr(uploaded_file, "type", "") or ""
+    is_pdf = name.lower().endswith(".pdf") or (mime == "application/pdf")
+
+    if is_pdf:
+        if fitz is None:
+            return None
+        try:
+            data = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
+            doc = fitz.open(stream=data, filetype="pdf")
+            page_index = max(0, min(int(pdf_page_index), doc.page_count - 1))
+            page = doc.load_page(page_index)
+            # 200~250dpi 정도 (2.0~2.5 배율)
+            mat = fitz.Matrix(2.2, 2.2)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            doc.close()
+            return img
+        except Exception:
+            return None
+
+    try:
+        return Image.open(uploaded_file).convert("RGB")
+    except Exception:
+        return None
+
+
+# ------------------------------------------------------------
+# RapidOCR engine (cache)
+# ------------------------------------------------------------
+@st.cache_resource(show_spinner=False)
+def get_rapidocr_engine():
+    if RapidOCR is None:
+        return None
+    try:
+        return RapidOCR()
+    except Exception:
+        try:
+            return RapidOCR(det_model_dir=None, rec_model_dir=None, cls_model_dir=None)
+        except Exception:
+            return None
+
+
+def _rapidocr_to_text(res) -> str:
+    """
+    RapidOCR 결과를 텍스트(줄 단위)로 변환.
+    - 점수/튜플이 섞여도 text만 뽑는다.
+    """
+    if not res:
+        return ""
+    out: list[str] = []
+    try:
+        for item in res:
+            if item is None:
+                continue
+            txt = ""
+            if isinstance(item, (list, tuple)):
+                # typical: [box, (text, score)] or [box, text, score]
+                if len(item) >= 2:
+                    cand = item[1]
+                    if isinstance(cand, (list, tuple)) and len(cand) >= 1:
+                        txt = cand[0]
+                    else:
+                        txt = cand
+                elif len(item) == 1:
+                    txt = item[0]
+            else:
+                txt = item
+            txt = (str(txt) if txt is not None else "").strip()
+            if txt:
+                out.append(txt)
+    except Exception:
+        return ""
+    return "\n".join(out)
+
+
+def _ocr_rapidocr(pil_img: Image.Image) -> str:
+    eng = get_rapidocr_engine()
+    if eng is None or np is None or pil_img is None:
+        return ""
+    try:
+        arr = np.array(pil_img.convert("RGB"))
+        r = eng(arr)
+        if isinstance(r, tuple) and len(r) >= 1:
+            r = r[0]
+        return _rapidocr_to_text(r)
+    except Exception:
+        return ""
+
+
+# ------------------------------------------------------------
+# MRZ helpers (TD3 passport)
+# ------------------------------------------------------------
+_MRZ_CLEAN_TRANS = str.maketrans({'«': '<', '‹': '<', '>': '<', ' ': ''})
+
+def _normalize_mrz_line(s: str) -> str:
+    s = (s or "").strip().translate(_MRZ_CLEAN_TRANS).upper()
+    if s.startswith("PO"):
+        s = "P<" + s[2:]
+    s = re.sub(r"[^A-Z0-9<]", "", s)
+    if len(s) < 44:
+        s += "<" * (44 - len(s))
+    elif len(s) > 44:
+        s = s[:44]
+    return s
+
+
+_MRZ_WEIGHTS = (7, 3, 1)
+_MRZ_VALUES = {**{str(i): i for i in range(10)},
+               **{chr(ord('A') + i): 10 + i for i in range(26)},
+               '<': 0}
+
+def _mrz_checksum(data: str) -> str:
+    total = 0
+    for i, ch in enumerate(data):
+        total += _MRZ_VALUES.get(ch, 0) * _MRZ_WEIGHTS[i % 3]
+    return str(total % 10)
+
+
+def _mrz_validate_td3(L2: str) -> bool:
+    L2 = _normalize_mrz_line(L2)
+    pn = L2[0:9]; pn_cd = L2[9]
+    nat = L2[10:13]
+    dob = L2[13:19]; dob_cd = L2[19]
+    sex = L2[20]
+    exp = L2[21:27]; exp_cd = L2[27]
+    personal = L2[28:42]; personal_cd = L2[42]
+    final_cd = L2[43]
+
+    if _mrz_checksum(pn) != pn_cd:
+        return False
+    if _mrz_checksum(dob) != dob_cd:
+        return False
+    if _mrz_checksum(exp) != exp_cd:
+        return False
+    comp = pn + pn_cd + dob + dob_cd + exp + exp_cd + personal + personal_cd
+    if _mrz_checksum(comp) != final_cd:
+        return False
+    if not re.fullmatch(r"[A-Z]{3}", nat):
+        return False
+    if sex not in "MF<":
+        return False
+    return True
+
+
+def _find_mrz_pair_with_checksum(text: str):
+    lines = [l for l in (text or "").splitlines() if l.strip()]
+    norms = [_normalize_mrz_line(l) for l in lines]
+    best = None  # (score, L1, L2)
+    for i in range(len(norms)):
+        for j in range(i + 1, len(norms)):
+            L1, L2 = norms[i], norms[j]
+            if not L1.startswith("P<"):
+                continue
+            if not _mrz_validate_td3(L2):
+                continue
+            score = (L1 + L2).count("<")
+            if best is None or score > best[0]:
+                best = (score, L1, L2)
+    if best:
+        return best[1], best[2]
+    return None, None
+
+
+def _minus_years(d: _dt.date, years: int) -> _dt.date:
+    y = d.year - years
+    import calendar
+    endday = calendar.monthrange(y, d.month)[1]
+    return _dt(y, d.month, min(d.day, endday)).date()
+
+
+def _parse_mrz_pair(L1: str, L2: str) -> dict:
+    out = {}
+    L1 = _normalize_mrz_line(L1); L2 = _normalize_mrz_line(L2)
+
+    # Name field
+    if "<<" in L1[5:]:
+        sur, given = L1[5:].split("<<", 1)
+        out["성"] = sur.replace("<", " ").strip()
+        out["명"] = given.replace("<", " ").strip()
+
+    pn = re.sub(r"[^A-Z0-9]", "", L2[0:9])
+    nat = re.sub(r"[^A-Z]", "", L2[10:13])
+    dob = re.sub(r"[^0-9]", "", L2[13:19])
+    sex = L2[20:21]
+    exp = re.sub(r"[^0-9]", "", L2[21:27])
+
+    if pn: out["여권"] = pn
+    if nat: out["국가"] = nat
+    out["성별"] = "남" if sex == "M" else ("여" if sex == "F" else "")
+
+    if len(dob) == 6:
+        yy, mm, dd = int(dob[:2]), int(dob[2:4]), int(dob[4:6])
+        yy += 2000 if yy < 80 else 1900
+        try:
+            out["생년월일"] = _dt(yy, mm, dd).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    if len(exp) == 6:
+        yy, mm, dd = int(exp[:2]), int(exp[2:4]), int(exp[4:6])
+        yy += 2000 if yy < 80 else 1900
+        try:
+            out["만기"] = _dt(yy, mm, dd).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    # issue date (heuristic: 10y passport => expiry -10y + 1 day)
+    if out.get("만기"):
+        try:
+            expd = _dt.strptime(out["만기"], "%Y-%m-%d").date()
+            issued = _minus_years(expd, 10) + _td(days=1)
+            out["발급"] = issued.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    return out
+
+
+# ------------------------------------------------------------
+# MRZ ROI detection (robust vs margins)
+# ------------------------------------------------------------
+def _detect_mrz_roi(pil_img: Image.Image) -> Image.Image | None:
+    """
+    이미지에서 MRZ 띠(가로로 긴 텍스트 밴드)를 OpenCV로 탐지.
+    실패하면 None.
+    """
+    if pil_img is None or cv2 is None or np is None:
+        return None
+
+    img = np.array(pil_img.convert("RGB"))
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+    # MRZ는 보통 하단에 있으므로 하단 60%만 보고 탐지
+    y_start = int(h * 0.35)
+    gray_roi = gray[y_start:, :]
+
+    # blackhat to highlight dark text on bright background
+    rect_k = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 7))
+    bh = cv2.morphologyEx(gray_roi, cv2.MORPH_BLACKHAT, rect_k)
+
+    # gradient X
+    gradX = cv2.Sobel(bh, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=-1)
+    gradX = np.absolute(gradX)
+    if gradX.max() > 0:
+        gradX = (255 * (gradX / gradX.max())).astype("uint8")
+    else:
+        gradX = gradX.astype("uint8")
+
+    gradX = cv2.GaussianBlur(gradX, (5, 5), 0)
+    _, thr = cv2.threshold(gradX, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # close to connect letters into a band
+    close_k = cv2.getStructuringElement(cv2.MORPH_RECT, (35, 5))
+    closed = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, close_k)
+    closed = cv2.erode(closed, None, iterations=1)
+    closed = cv2.dilate(closed, None, iterations=2)
+
+    # contours
+    cnts, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+
+    # pick best: widest band, reasonable height, near bottom
+    best = None
+    for c in cnts:
+        x, y, cw, ch = cv2.boundingRect(c)
+        aspect = cw / float(ch + 1e-6)
+        area = cw * ch
+        # heuristics
+        if cw < w * 0.55:
+            continue
+        if ch < 25 or ch > (gray_roi.shape[0] * 0.35):
+            continue
+        if aspect < 5:
+            continue
+        # y is within roi; prefer lower y (closer to bottom)
+        score = area + (y * 2.0)
+        if best is None or score > best[0]:
+            best = (score, x, y, cw, ch)
+
+    if best is None:
+        return None
+
+    _, x, y, cw, ch = best
+    # add padding
+    pad_x = int(w * 0.02)
+    pad_y = int(ch * 0.6)
+    x1 = max(0, x - pad_x)
+    x2 = min(w, x + cw + pad_x)
+    y1 = max(0, y_start + y - pad_y)
+    y2 = min(h, y_start + y + ch + pad_y)
+
+    return pil_img.crop((x1, y1, x2, y2))
+
+
+def _preprocess(pil_img: Image.Image, mode: str) -> Image.Image:
+    """
+    MRZ용 전처리
+    - raw: 그대로
+    - clahe: 대비 강화
+    - bin: adaptive threshold (부드럽게)
+    """
+    if pil_img is None:
+        return pil_img
+    if mode == "raw":
+        return pil_img
+
+    if cv2 is None or np is None:
+        # pillow fallback
+        g = ImageOps.grayscale(pil_img)
+        g = ImageOps.autocontrast(g)
+        return g.convert("RGB")
+
+    img = np.array(pil_img.convert("RGB"))
+    g = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+    if mode == "clahe":
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        g2 = clahe.apply(g)
+        rgb = cv2.cvtColor(g2, cv2.COLOR_GRAY2RGB)
+        return Image.fromarray(rgb)
+
+    if mode == "bin":
+        g = cv2.GaussianBlur(g, (3, 3), 0)
+        th = cv2.adaptiveThreshold(
+            g, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            31, 5
+        )
+        rgb = cv2.cvtColor(th, cv2.COLOR_GRAY2RGB)
+        return Image.fromarray(rgb)
+
+    if mode == "clahe+bin":
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        g2 = clahe.apply(g)
+        g2 = cv2.GaussianBlur(g2, (3, 3), 0)
+        th = cv2.adaptiveThreshold(
+            g2, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            31, 5
+        )
+        rgb = cv2.cvtColor(th, cv2.COLOR_GRAY2RGB)
+        return Image.fromarray(rgb)
+
+    return pil_img
+
+
+def _rotate(pil_img: Image.Image, deg: int) -> Image.Image:
+    if pil_img is None or (deg % 360 == 0):
+        return pil_img
+    return pil_img.rotate(deg, expand=True)
+
+
+def _mrz_fixed_crop(pil_img: Image.Image, bottom_frac: float) -> Image.Image:
+    w, h = pil_img.size
+    y0 = int(h * (1.0 - float(bottom_frac)))
+    y0 = max(0, min(y0, h - 1))
+    return pil_img.crop((0, y0, w, h))
+
+
+def _upscale_if_needed(pil_img: Image.Image, target_short: int = 1000) -> Image.Image:
+    if pil_img is None:
+        return pil_img
+    w, h = pil_img.size
+    short = min(w, h)
+    if short >= target_short:
+        return pil_img
+    scale = target_short / float(short)
+    nw, nh = int(w * scale), int(h * scale)
+    return pil_img.resize((nw, nh), resample=Image.LANCZOS)
+
+
+# ------------------------------------------------------------
+# Passport parsing pipeline
+# ------------------------------------------------------------
+def parse_passport(pil_img: Image.Image):
+    """
+    Fast pipeline:
+    - Detect MRZ ROI (opencv) -> OCR -> checksum validate
+    - If fail: rotate 0/180, fixed crop ratios, preprocess modes
+    """
+    dbg = {"tries": []}
+    st.session_state["passport_mrz_debug"] = dbg
+
+    if pil_img is None:
+        return {}
+
+    # protect huge images
+    w, h = pil_img.size
+    if max(w, h) > 2800:
+        scale = 2800 / float(max(w, h))
+        pil_img = pil_img.resize((int(w * scale), int(h * scale)), resample=Image.LANCZOS)
+
+    rotations = [0, 180, 90, 270]
+    crops = [0.28, 0.35, 0.45, 0.60]  # include 0.60 as last resort (margin-heavy scans)
+    pres = ["raw", "clahe", "bin", "clahe+bin"]
+
+    best = None  # (ok, parsed, sample_img, text)
+
+    for rot in rotations:
+        img_r = _rotate(pil_img, rot)
+
+        # 1) try detected ROI first (fast + robust)
+        roi = _detect_mrz_roi(img_r)
+        roi_src = "detect" if roi is not None else "fixed"
+
+        for crop in ([None] if roi is not None else []):
+            # placeholder to enter loop once when roi exists
+            _ = crop
+
+        # when roi exists, attempt with preprocesses + upscale
+        if roi is not None:
+            roi_u = _upscale_if_needed(roi, 1000)
+            for pre in pres:
+                im = _preprocess(roi_u, pre)
+                txt = _ocr_rapidocr(im)
+                L1, L2 = _find_mrz_pair_with_checksum(txt)
+                ok = bool(L1 and L2)
+                dbg["tries"].append({
+                    "rot": rot, "crop": "detect", "pre": pre,
+                    "ok": ok, "text_sample": (txt[:400] if txt else "")
+                })
+                if ok:
+                    parsed = _parse_mrz_pair(L1, L2)
+                    best = (True, parsed, im, txt)
+                    st.session_state["passport_mrz_debug"] = dbg
+                    return parsed
+
+        # 2) fallback fixed crops
+        for crop in crops:
+            roi2 = _mrz_fixed_crop(img_r, crop)
+            roi2 = _upscale_if_needed(roi2, 1000)
+            for pre in pres:
+                im = _preprocess(roi2, pre)
+                txt = _ocr_rapidocr(im)
+                L1, L2 = _find_mrz_pair_with_checksum(txt)
+                ok = bool(L1 and L2)
+                dbg["tries"].append({
+                    "rot": rot, "crop": crop, "pre": pre,
+                    "ok": ok, "text_sample": (txt[:400] if txt else "")
+                })
+                if ok:
+                    parsed = _parse_mrz_pair(L1, L2)
+                    best = (True, parsed, im, txt)
+                    st.session_state["passport_mrz_debug"] = dbg
+                    return parsed
+
+    st.session_state["passport_mrz_debug"] = dbg
+    return {}
+
+
+# ------------------------------------------------------------
+# UI render
+# ------------------------------------------------------------
+def render():
+    st.subheader("📷 스캔으로 고객 추가/수정")
+    st.caption("✅ 1순위: 여권 MRZ(하단 2줄)로 영문성명/생년월일/국적/성별 추출. (등록증은 2순위)")
+
+    # ---- options ----
+    show_debug = st.checkbox("🧪 디버그 보기(느림)", value=False)
+    show_preview = st.checkbox("🖼️ 이미지 미리보기", value=False)
+
+    # ---- engine check ----
+    rapid_ok = (RapidOCR is not None and np is not None)
+    if show_debug:
+        with st.expander("🔧 OCR 엔진 진단", expanded=True):
+            st.write({
+                "RapidOCR": bool(RapidOCR is not None),
+                "numpy": bool(np is not None),
+                "opencv": bool(cv2 is not None),
+                "pymupdf": bool(fitz is not None),
+            })
+    if not rapid_ok:
+        st.error("❌ RapidOCR 또는 numpy가 없습니다. `pip install rapidocr onnxruntime numpy`")
+        st.stop()
+
+    # ---- upload ----
+    c0, c1 = st.columns(2)
+    with c0:
+        passport_file = st.file_uploader("여권 이미지/PDF (필수)", type=["jpg", "jpeg", "png", "webp", "pdf"])
+    with c1:
+        arc_file = st.file_uploader("등록증 이미지/PDF (선택, 2순위)", type=["jpg", "jpeg", "png", "webp", "pdf"])
+
+    def _is_pdf(f):
+        if f is None:
+            return False
+        name = getattr(f, "name", "") or ""
+        mime = getattr(f, "type", "") or ""
+        return name.lower().endswith(".pdf") or (mime == "application/pdf")
+
+    pass_page_idx = 0
+    if passport_file is not None and _is_pdf(passport_file) and fitz is not None:
+        try:
+            doc = fitz.open(stream=passport_file.getvalue(), filetype="pdf")
+            pc = doc.page_count
+            doc.close()
+            if pc > 1:
+                pass_page_idx = st.number_input("여권 PDF 페이지 번호(0부터)", 0, pc - 1, 0, 1)
+        except Exception:
+            pass
+
+    # ---- parse passport (do not show big images above the form) ----
+    img_p = open_image_safe(passport_file, pdf_page_index=pass_page_idx) if passport_file else None
+    parsed_passport = parse_passport(img_p) if img_p is not None else {}
+
+    # ---- prefill session ----
+    def _set_if(field: str, val: str):
+        k = f"scan_{field}"
+        v = (val or "").strip()
+        if not v:
+            return
+        st.session_state[k] = v
+
+    if parsed_passport:
+        _set_if("성", parsed_passport.get("성", ""))
+        _set_if("명", parsed_passport.get("명", ""))
+        _set_if("여권", parsed_passport.get("여권", ""))
+        _set_if("여권발급", parsed_passport.get("발급", ""))
+        _set_if("여권만기", parsed_passport.get("만기", ""))
+
+        # YYMMDD for ARC front (optional)
+        b = (parsed_passport.get("생년월일") or "").strip()
+        if b:
+            try:
+                yymmdd = _dt.strptime(b, "%Y-%m-%d").strftime("%y%m%d")
+                if not str(st.session_state.get("scan_등록증", "")).strip():
+                    st.session_state["scan_등록증"] = yymmdd
+            except Exception:
+                pass
+
+    # ---- form (keep near top) ----
+    st.markdown("### 🔎 추출값 확인/수정 (저장 버튼을 눌러야 반영)")
+    if "scan_연" not in st.session_state or not str(st.session_state["scan_연"]).strip():
+        st.session_state["scan_연"] = "010"
+
+    with st.form("scan_confirm_form"):
+        c1, c2, c3 = st.columns(3)
+
+        한글 = c1.text_input("한글", key="scan_한글")
+        성   = c1.text_input("성(영문)", key="scan_성")
+        명   = c1.text_input("명(영문)", key="scan_명")
+
+        여권     = c2.text_input("여권번호", key="scan_여권")
+        여권발급 = c2.text_input("여권 발급일(YYYY-MM-DD)", key="scan_여권발급")
+        여권만기 = c2.text_input("여권 만기일(YYYY-MM-DD)", key="scan_여권만기")
+
+        등록증 = c3.text_input("등록증 앞(YYMMDD)", key="scan_등록증")
+        번호   = c3.text_input("등록증 뒤 7자리",   key="scan_번호")
+        발급일 = c3.text_input("등록증 발급일(YYYY-MM-DD)", key="scan_발급일")
+        만기일 = c3.text_input("등록증 만기일(YYYY-MM-DD)", key="scan_만기일")
+        주소   = c3.text_input("주소", key="scan_주소")
+
+        p1, p2, p3, p4 = st.columns([1, 1, 1, 0.7])
+        연   = p1.text_input("연(앞 3자리)", key="scan_연")
+        락   = p2.text_input("락(중간 4자리)", key="scan_락")
+        처   = p3.text_input("처(끝 4자리)", key="scan_처")
+        V    = p4.text_input("V", key="scan_V")
+
+        submitted = st.form_submit_button("💾 고객관리 반영")
+        if submitted:
+            passport_data = {
+                "성":   성.strip(),
+                "명":   명.strip(),
+                "여권": 여권.strip(),
+                "발급": 여권발급.strip(),
+                "만기": 여권만기.strip(),
+            }
+            arc_data = {
+                "한글":   한글.strip(),
+                "등록증": 등록증.strip(),
+                "번호":   번호.strip(),
+                "발급일": 발급일.strip(),
+                "만기일": 만기일.strip(),
+                "주소":   주소.strip(),
+            }
+            extra_data = {"연": 연.strip(), "락": 락.strip(), "처": 처.strip(), "V": V.strip()}
+
+            ok, msg = upsert_customer_from_scan(passport_data, arc_data, extra_data)
+            if ok:
+                st.success(f"✅ {msg}")
+            else:
+                st.error(f"❌ {msg}")
+
+    # ---- previews / debug (collapsed so it won't push the form) ----
+    if show_preview and img_p is not None:
+        with st.expander("🖼️ 업로드 미리보기", expanded=False):
+            st.image(img_p, caption="여권", use_container_width=True)
+
+    if show_debug:
+        with st.expander("🧪 여권 MRZ 시도 로그", expanded=True):
+            dbg = st.session_state.get("passport_mrz_debug", {}) or {}
+            tries = dbg.get("tries", []) or []
+            for i, t in enumerate(tries, start=1):
+                st.write(f"Try {i} — rot={t.get('rot')} crop={t.get('crop')} pre={t.get('pre')} ok={t.get('ok')}")
+            if tries:
+                st.write("🧪 마지막 OCR text_sample")
+                st.code((tries[-1].get("text_sample") or "")[:2000])
+
+        st.json({"passport": parsed_passport})
+
+    if st.button("← 고객관리로 돌아가기", use_container_width=True):
+        st.session_state[SESS_CURRENT_PAGE] = PAGE_CUSTOMER
+        st.rerun()

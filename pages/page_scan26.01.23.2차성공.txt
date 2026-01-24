@@ -40,7 +40,7 @@ from core.customer_service import (
 # -----------------------------
 
 def _ensure_tesseract() -> bool:
-    """Tesseract 실행파일 & pytesseract 연결 확인 (로컬/서버 겸용).
+    r"""Tesseract 실행파일 & pytesseract 연결 확인 (로컬/서버 겸용).
 
     - Windows: C:\Program Files\Tesseract-OCR\tesseract.exe 사용
     - Linux/서버(Render 등): PATH 에 있는 `tesseract` 사용
@@ -85,16 +85,20 @@ def _ensure_tesseract() -> bool:
 
 
 
-def _ocr(img, lang="kor", config=""):
+def _ocr(img, lang="kor", config="", timeout: int | None = None):
     """
     공통 OCR 래퍼.
+    - timeout: 초 단위. 지정하면 해당 시간 내 응답 없을 때 예외가 나며, 여기서는 빈 문자열로 처리한다.
     """
     if pytesseract is None or img is None:
         return ""
     try:
-        return pytesseract.image_to_string(img, lang=lang, config=config) or ""
+        if timeout is None:
+            return pytesseract.image_to_string(img, lang=lang, config=config) or ""
+        return pytesseract.image_to_string(img, lang=lang, config=config, timeout=timeout) or ""
     except Exception:
         return ""
+
 
 
 def _binarize(img):
@@ -171,41 +175,92 @@ def ocr_try_all(
 
 
 
-def open_image_safe(uploaded_file):
+
+
+# -----------------------------
+# PDF → Image (여권 PDF 지원)
+# -----------------------------
+
+def _pdf_to_pil_images(pdf_bytes: bytes, max_pages: int = 10, zoom: float = 2.5):
+    """PDF bytes를 PIL 이미지 리스트로 변환.
+    - PyMuPDF(fitz) 사용. (없으면 빈 리스트)
+    - zoom 2.5 ≒ 180~200dpi 수준
     """
-    업로드된 파일을 안전하게 이미지(RGB)로 여는 함수.
-    - 이미지(jpg/png/webp 등): 그대로 PIL로 로드
-    - PDF: 1페이지를 렌더링하여 PIL 이미지로 변환
+    try:
+        import fitz  # pymupdf
+    except Exception:
+        return []
+
+    imgs = []
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        n = min(doc.page_count, max_pages)
+        mat = fitz.Matrix(zoom, zoom)
+        for i in range(n):
+            page = doc.load_page(i)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            imgs.append(img)
+        doc.close()
+    except Exception:
+        return []
+    return imgs
+
+
+_COUNTRY_CODE_MAP = {
+    "KOR": "대한민국",
+    "CHN": "중국",
+    "VNM": "베트남",
+    "USA": "미국",
+    "JPN": "일본",
+    "PHL": "필리핀",
+    "MNG": "몽골",
+    "UZB": "우즈베키스탄",
+    "KAZ": "카자흐스탄",
+    "RUS": "러시아",
+    "THA": "태국",
+    "IDN": "인도네시아",
+    "MMR": "미얀마",
+    "NPL": "네팔",
+    "IND": "인도",
+    "PAK": "파키스탄",
+    "BGD": "방글라데시",
+}
+
+def _country_name(alpha3: str) -> str:
+    c = (alpha3 or "").strip().upper()
+    if not c:
+        return ""
+    if c in _COUNTRY_CODE_MAP:
+        return _COUNTRY_CODE_MAP[c]
+    # pycountry가 있으면 영문 국가명이라도 표시
+    try:
+        import pycountry
+        rec = pycountry.countries.get(alpha_3=c)
+        if rec and getattr(rec, "name", None):
+            return str(rec.name)
+    except Exception:
+        pass
+    return c
+def open_image_safe(uploaded_file):
+    """업로드된 파일을 안전하게 PIL RGB 이미지로 여는 함수.
+
+    - 이미지(jpg/png/webp): 그대로 오픈
+    - PDF: 1페이지를 렌더링해서 이미지로 변환
     """
     if uploaded_file is None:
         return None
 
+    # Streamlit UploadedFile
     name = getattr(uploaded_file, "name", "") or ""
-    ext = os.path.splitext(name.lower())[1]
+    lower = name.lower()
 
-    # PDF 처리: 1페이지 렌더
-    if ext == ".pdf":
-        try:
-            import fitz  # PyMuPDF
-        except Exception:
-            return None
-
-        try:
-            pdf_bytes = uploaded_file.getvalue()
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            if doc.page_count < 1:
-                return None
-            page = doc[0]
-            # 속도 유지: 과도한 고해상도 금지 (zoom 2.0 정도면 MRZ 충분)
-            mat = fitz.Matrix(2.0, 2.0)
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            return img
-        except Exception:
-            return None
-
-    # 일반 이미지
     try:
+        if lower.endswith(".pdf"):
+            pdf_bytes = uploaded_file.getvalue()
+            imgs = _pdf_to_pil_images(pdf_bytes, max_pages=1)
+            return imgs[0].convert("RGB") if imgs else None
+
         return Image.open(uploaded_file).convert("RGB")
     except Exception:
         return None
@@ -241,23 +296,203 @@ def _is_td3_candidate(L1: str, L2: str) -> bool:
     return True
 
 def find_mrz_pair_from_text(text: str):
-    lines = [l for l in (text or '').splitlines() if l.strip()]
-    norms = [(i, _normalize_mrz_line(l)) for i, l in enumerate(lines)]
-    best = None
-    for (i, L1) in norms:
-        if i+1 < len(norms):
-            _, L2 = norms[i+1]
-            if _is_td3_candidate(L1, L2):
-                score = (L1+L2).count('<')
-                if not best or score > best[0]:
-                    best = (score, L1, L2)
-    return (best[1], best[2]) if best else (None, None)
+    """
+    OCR 텍스트에서 TD3(MRZ 44x2) 2줄을 최대한 안정적으로 찾는다.
+
+    핵심:
+    - 줄 경계가 깨져 '|'로 둘이 붙거나(= 88자+), 앞뒤에 잡문이 섞여도 잡도록
+      "정규화된 문자 스트림"에서 44자 슬라이딩 윈도우로 Line1/Line2 후보를 찾는다.
+    - 성공 판정은 'L1/L2 위치 규칙' 기반(국적/성별/생년/만기 자리)으로 한다.
+    - 실패 시에는 기존 라인 기반 조합 검사로 fallback.
+    반환: (L1, L2) 또는 (None, None)
+    """
+    import re
+
+    if not text:
+        return (None, None)
+
+    # 1) 원문 라인 수집
+    raw_lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+
+    # 2) "문자 스트림" 구성: 라인들을 붙여놓고, MRZ에 허용되는 문자만 남긴다.
+    #    (파이프/공백/잡문으로 인해 44 경계가 어긋나도, 슬라이딩 윈도우로 재탐색 가능)
+    joined_raw = "<".join(raw_lines).upper().translate(_MRZ_CLEAN_TRANS)
+    joined_raw = re.sub(r"[^A-Z0-9<]", "", joined_raw)
+
+    def _norm44(s: str) -> str:
+        s = (s or "").strip().upper().translate(_MRZ_CLEAN_TRANS)
+        # 'PO'로 시작하는 OCR 오류(= P<) 보정
+        if s.startswith("PO"):
+            s = "P<" + s[2:]
+        s = re.sub(r"[^A-Z0-9<]", "", s)
+        if len(s) < 44:
+            s += "<" * (44 - len(s))
+        elif len(s) > 44:
+            s = s[:44]
+        return s
+
+    def _looks_like_line2(L2: str) -> bool:
+        # 국적(10:13), 성별(20), 생년(13:19), 만기(21:27) 형태 체크
+        if not re.fullmatch(r"[A-Z0-9<]{44}", L2 or ""):
+            return False
+        if not re.fullmatch(r"[A-Z]{3}", (L2[10:13] or "")):
+            return False
+        if (L2[20] not in "MF<"):
+            return False
+        if not re.fullmatch(r"\d{6}", re.sub(r"[^0-9]", "", (L2[13:19] or ""))):
+            return False
+        if not re.fullmatch(r"\d{6}", re.sub(r"[^0-9]", "", (L2[21:27] or ""))):
+            return False
+        # 여권번호(0~8)에 '<'가 과도하면(거의 공백) 실패
+        doc = (L2[0:9] or "")
+        if doc.count("<") >= 5:
+            return False
+        return True
+
+    def _looks_like_line1(L1: str) -> bool:
+        if not re.fullmatch(r"[A-Z0-9<]{44}", L1 or ""):
+            return False
+        # 'PO'로 시작하는 OCR 오류(= P<)는 _norm44에서 이미 P<로 보정됨
+        if not L1.startswith("P<"):
+            return False
+        # 발행국/발급국 코드(positions 3-5) 3자리 영문
+        if not re.fullmatch(r"[A-Z]{3}", (L1[2:5] or "")):
+            return False
+        # 이름 구분자 존재
+        if ("<<" not in L1[5:]):
+            return False
+        # Line1 끝부분은 보통 filler('<')가 많이 깔린다.
+        # 경계가 틀어져 Line2(여권번호)가 섞이면 여기서 걸러짐.
+        tail = L1[-10:]
+        if tail.count("<") < 5:
+            return False
+        return True
+
+    # 3) 슬라이딩 윈도우 후보 탐색
+    best = None  # (score, pos1, L1, pos2, L2)
+    S = joined_raw
+
+    if len(S) >= 60:  # 너무 짧으면 의미 없음
+        win_candidates_1 = []
+        win_candidates_2 = []
+
+        # 44자 윈도우 스캔 (과하게 느려지지 않도록 최대 길이 제한)
+        # 일반 스캔본/사진에서 S 길이는 수백~수천 수준이어서 충분히 감당 가능.
+        max_scan_len = 8000
+        if len(S) > max_scan_len:
+            S = S[:max_scan_len]
+
+        for i in range(0, len(S) - 44 + 1):
+            w = _norm44(S[i:i+44])
+            if _looks_like_line1(w):
+                win_candidates_1.append((i, w))
+            if _looks_like_line2(w):
+                win_candidates_2.append((i, w))
+
+        # 후보 페어링: Line2는 Line1 뒤쪽에 가깝게(대개 44 근처) 위치
+        for (p1, L1) in win_candidates_1:
+            for (p2, L2) in win_candidates_2:
+                if p2 <= p1:
+                    continue
+                dist = p2 - p1
+                # 너무 가깝거나 너무 멀면 배제 (정상 TD3는 대개 44 근처)
+                if dist < 30:
+                    continue
+                # 너무 멀면(잡문 섞임) 배제
+                if dist > 80:
+                    continue
+                # 점수: '<' 개수 + 인접성 보너스
+                base = (L1 + L2).count("<")
+                # 인접성: 44에 가까울수록 가산
+                prox = max(0, 60 - abs(dist - 44))
+                score = base + prox
+                if (best is None) or (score > best[0]):
+                    best = (score, p1, L1, p2, L2)
+
+    if best:
+        return (best[2], best[4])
+
+    # 4) fallback: 라인 단위 정규화 후, 모든 조합 검사
+    cand_lines = []
+    for l in raw_lines:
+        nl = _norm44(l)
+        if nl:
+            cand_lines.append(nl)
+
+    # 88자(붙은 2줄) 분해도 라인 기반으로 한 번 더
+    expanded = []
+    for nl in cand_lines:
+        if len(nl) >= 88:
+            expanded.append(_norm44(nl[:44]))
+            expanded.append(_norm44(nl[44:88]))
+        else:
+            expanded.append(_norm44(nl))
+    # 중복 제거(순서 유지)
+    seen = set()
+    uniq = []
+    for l in expanded:
+        if l in seen:
+            continue
+        seen.add(l)
+        uniq.append(l)
+
+    best2 = None
+    for i in range(len(uniq)):
+        for j in range(len(uniq)):
+            if i == j:
+                continue
+            L1, L2 = uniq[i], uniq[j]
+            L1n = _norm44(L1)
+            L2n = _norm44(L2)
+            if _looks_like_line1(L1n) and _looks_like_line2(L2n):
+                score = (L1n + L2n).count("<")
+                if (best2 is None) or (score > best2[0]):
+                    best2 = (score, L1n, L2n)
+
+    return (best2[1], best2[2]) if best2 else (None, None)
 
 def _minus_years(d: _dt.date, years: int) -> _dt.date:
     y = d.year - years
     import calendar
     endday = calendar.monthrange(y, d.month)[1]
     return _dt(y, d.month, min(d.day, endday)).date()
+
+
+def _parse_mrz_name_from_L1(L1: str) -> tuple[str, str]:
+    """MRZ 1줄(L1)에서 (성, 명)을 최대한 보수적으로 추출.
+    - 표준: SURNAME<<GIVEN<NAMES
+    - OCR이 '<' 하나를 누락해 SURNAME<GIVEN 처럼 들어오는 경우가 있어 fallback을 둔다.
+    - 패딩 구간(<<<... ) 이후는 버린다.
+    """
+    if not L1:
+        return ("", "")
+    L1 = _normalize_mrz_line(L1)
+    if not L1.startswith("P<"):
+        return ("", "")
+
+    field = L1[5:]  # 국가코드(3) 이후 이름필드 시작
+
+    # 표준 구분자 우선
+    if "<<" in field:
+        sur_raw, given_raw = field.split("<<", 1)
+    else:
+        # fallback: 첫 '<'를 성/명 경계로 간주 (우즈벡 등에서 OCR 누락 케이스 대응)
+        p = field.find("<")
+        if p <= 0:
+            return ("", "")
+        sur_raw, given_raw = field[:p], field[p+1:]
+
+    def _clean(part: str) -> str:
+        part = re.sub(r"[^A-Z<]", "", (part or "").upper())
+        # 마지막 이름 뒤의 패딩(<<<...) 제거
+        part = re.split(r"<{3,}", part, maxsplit=1)[0]
+        part = part.strip("<")
+        part = part.replace("<", " ").strip()
+        part = re.sub(r"\s{2,}", " ", part)
+        return part
+
+    return (_clean(sur_raw), _clean(given_raw))
+
 
 def _parse_mrz_pair(L1: str, L2: str) -> dict:
     out = {}
@@ -266,14 +501,13 @@ def _parse_mrz_pair(L1: str, L2: str) -> dict:
     L1 = _normalize_mrz_line(L1) if L1 else ""
     L2 = _normalize_mrz_line(L2) if L2 else ""
 
-    # 🔹 이름: "진짜 여권 1줄(P<...)"처럼 생긴 경우에만 파싱
-    #   - P<로 시작
-    #   - 뒤에 '<<' 구분자가 존재
-    if L1.startswith("P<") and "<<" in L1[5:]:
-        sur, given = L1[5:].split("<<", 1)
-        out["성"] = sur.replace("<", " ").strip()
-        out["명"] = given.replace("<", " ").strip()
-    # 그렇지 않으면 이름은 아예 채우지 않음 → 나머지 필드는 그대로 진행
+    # 🔹 이름: MRZ 1줄에서 (성/명) 추출
+    sur, given = _parse_mrz_name_from_L1(L1)
+    if sur:
+        out["성"] = sur
+    if given:
+        out["명"] = given
+
 
     # 여권, 국적, 생년, 성별, 만기 (기존 로직 그대로)
     pn = re.sub(r"[^A-Z0-9]", "", L2[0:9])
@@ -282,16 +516,43 @@ def _parse_mrz_pair(L1: str, L2: str) -> dict:
 
     nat = re.sub(r"[^A-Z]", "", L2[10:13])
     if nat:
+        # OCR 오인식 보정 (예: UZB가 JZB로 잘못 잡히는 케이스)
+        if nat == "JZB":
+            nat = "UZB"
+        elif nat == "OZB":
+            nat = "UZB"
         out["국가"] = nat
 
     b = re.sub(r"[^0-9]", "", L2[13:19])
     if len(b) == 6:
         yy, mm, dd = int(b[:2]), int(b[2:4]), int(b[4:6])
-        yy += 2000 if yy < 80 else 1900
+        # MRZ의 2자리 연도는 세기가 명시되지 않음 → '현실적인 생년'으로 세기 결정
         try:
-            out["생년월일"] = _dt(yy, mm, dd).strftime("%Y-%m-%d")
+            today = _dt.today().date()
+            cand_years = [1900 + yy, 2000 + yy]
+            best_date = None
+            best_score = None
+            for y in cand_years:
+                try:
+                    d = _dt(y, mm, dd).date()
+                except Exception:
+                    continue
+                age = (today - d).days / 365.25
+                # 생년은 미래일 수 없고, 통상 0~120세 범위
+                if d > today:
+                    continue
+                if not (0 <= age <= 120):
+                    continue
+                # 0~100세 범위를 우선(현실적 가중치)
+                score = (0 if age <= 100 else 50) + abs(age - 35)  # 35세 근처를 약간 선호
+                if (best_score is None) or (score < best_score):
+                    best_score = score
+                    best_date = d
+            if best_date:
+                out["생년월일"] = best_date.strftime("%Y-%m-%d")
         except Exception:
             pass
+
 
     sx = L2[20:21]
     out["성별"] = "남" if sx == "M" else ("여" if sx == "F" else "")
@@ -299,11 +560,37 @@ def _parse_mrz_pair(L1: str, L2: str) -> dict:
     e = re.sub(r"[^0-9]", "", L2[21:27])
     if len(e) == 6:
         yy, mm, dd = int(e[:2]), int(e[2:4]), int(e[4:6])
-        yy += 2000 if yy < 80 else 1900
+        # 만기일은 통상 '현재±몇 년' 범위에 존재 → 그 범위에 맞는 세기 선택
         try:
-            out["만기"] = _dt(yy, mm, dd).strftime("%Y-%m-%d")
+            today = _dt.today().date()
+            cand_years = [1900 + yy, 2000 + yy]
+            best_date = None
+            best_score = None
+            for y in cand_years:
+                try:
+                    d = _dt(y, mm, dd).date()
+                except Exception:
+                    continue
+                # 만기일은 과거라도 너무 오래된 값(예: 1928)은 비현실적
+                if d < (today.replace(year=today.year - 15)):
+                    continue
+                if d > (today.replace(year=today.year + 25)):
+                    continue
+                # 가까운 미래(또는 최근 과거)를 선호
+                score = abs((d - today).days)
+                if (best_score is None) or (score < best_score):
+                    best_score = score
+                    best_date = d
+            if best_date:
+                out["만기"] = best_date.strftime("%Y-%m-%d")
         except Exception:
-            pass
+            # fallback (기존 규칙)
+            yy2 = 2000 + yy if yy < 80 else 1900 + yy
+            try:
+                out["만기"] = _dt(yy2, mm, dd).strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
 
     # 👉 발급일: 10년짜리 기준 역산 (+1일) 그대로 유지
     if out.get("만기"):
@@ -317,257 +604,387 @@ def _parse_mrz_pair(L1: str, L2: str) -> dict:
     return out
 
 
-# ── MRZ(여권) 고정밀/고속 추출 유틸 ────────────────────────
-def _edge_density(pil_img: Image.Image) -> float:
-    """빠른 엣지(텍스트) 밀도 스코어. (numpy 없이)"""
-    if pil_img is None:
-        return 0.0
-    g = ImageOps.grayscale(pil_img)
-    # 속도 위해 축소
-    g = g.copy()
-    g.thumbnail((320, 320))
-    e = g.filter(ImageFilter.FIND_EDGES)
-    # 픽셀 중 임계값 초과 비율
-    data = list(e.getdata())
-    if not data:
-        return 0.0
-    thr = 40
-    cnt = 0
-    for v in data:
-        if v > thr:
-            cnt += 1
-    return cnt / float(len(data))
+def _mrz_char_value(ch: str) -> int:
+    if ch == '<':
+        return 0
+    if '0' <= ch <= '9':
+        return ord(ch) - ord('0')
+    if 'A' <= ch <= 'Z':
+        return ord(ch) - ord('A') + 10
+    return 0
 
+def _mrz_check_digit(data: str) -> str:
+    weights = (7, 3, 1)
+    s = 0
+    for i, ch in enumerate(data):
+        s += _mrz_char_value(ch) * weights[i % 3]
+    return str(s % 10)
 
-def _crop_to_content_bbox(img: Image.Image, pad: int = 20) -> Image.Image:
+def _mrz_td3_checksum_ok(L2: str) -> bool:
     """
-    여백이 큰 스캔본에서 '내용 영역'만 남기기 (속도형).
-    실패하면 원본 반환.
+    TD3(여권) 라인2 체크섬 검증.
+    - 문서번호 / 생년월일 / 만기일 / (가능하면) 종합체크섬
     """
-    if img is None:
-        return img
+    if not L2 or len(L2) != 44:
+        return False
 
-    w, h = img.size
-    # 너무 크면 bbox 탐색용으로만 축소
-    work = img.copy()
-    scale = 1.0
-    if max(w, h) > 900:
-        scale = 900.0 / float(max(w, h))
-        work = work.resize((int(w * scale), int(h * scale)), resample=_PILImage.BILINEAR)
+    # 문서번호 0-8, 체크 9
+    doc = L2[0:9]
+    cd_doc = L2[9:10]
+    if _mrz_check_digit(doc) != cd_doc:
+        return False
 
-    g = ImageOps.grayscale(work).filter(ImageFilter.FIND_EDGES)
-    # 임계값 초과 좌표 찾기
-    px = g.load()
-    ww, hh = g.size
-    thr = 35
-    minx, miny = ww, hh
-    maxx, maxy = 0, 0
-    found = False
+    # 생년월일 13-18, 체크 19
+    dob = L2[13:19]
+    cd_dob = L2[19:20]
+    if _mrz_check_digit(dob) != cd_dob:
+        return False
 
-    # 샘플링 간격(속도)
-    step = 2 if max(ww, hh) <= 600 else 3
-    for y in range(0, hh, step):
-        for x in range(0, ww, step):
-            if px[x, y] > thr:
-                found = True
-                if x < minx: minx = x
-                if y < miny: miny = y
-                if x > maxx: maxx = x
-                if y > maxy: maxy = y
+    # 만기일 21-26, 체크 27
+    exp = L2[21:27]
+    cd_exp = L2[27:28]
+    if _mrz_check_digit(exp) != cd_exp:
+        return False
 
-    if not found:
-        return img
+    # 종합 체크섬 43 (가능하면 검증)
+    comp = L2[0:10] + L2[13:20] + L2[21:28] + L2[28:43]
+    cd_comp = L2[43:44]
+    if cd_comp.isdigit() and _mrz_check_digit(comp) != cd_comp:
+        return False
 
-    # 너무 작은 bbox면 의미 없음
-    if (maxx - minx) < ww * 0.25 or (maxy - miny) < hh * 0.25:
-        return img
+    return True
 
-    # 원본 좌표로 환산
-    inv = 1.0 / scale
-    x0 = int(minx * inv) - pad
-    y0 = int(miny * inv) - pad
-    x1 = int(maxx * inv) + pad
-    y1 = int(maxy * inv) + pad
+def _mrz_generate_variants(L2: str, max_variants: int = 16):
+    """
+    OCR 오인식(0/O, 1/I/L, 2/Z, 5/S, 6/G, 8/B) 보정용 변형 후보 생성.
+    체크섬 통과 가능한 L2를 찾기 위한 제한된 탐색.
+    """
+    if not L2 or len(L2) != 44:
+        return [L2]
 
-    x0 = max(0, x0); y0 = max(0, y0)
-    x1 = min(w, x1); y1 = min(h, y1)
-    return img.crop((x0, y0, x1, y1))
-
-
-def _split_regions(img: Image.Image):
-    """상/하/좌/우/전체 후보 생성"""
-    w, h = img.size
-    top = img.crop((0, 0, w, h // 2))
-    bottom = img.crop((0, h // 2, w, h))
-    left = img.crop((0, 0, w // 2, h))
-    right = img.crop((w // 2, 0, w, h))
-    return {
-        "full": img,
-        "top": top,
-        "bottom": bottom,
-        "left": left,
-        "right": right,
+    swaps = {
+        'O': '0', '0': 'O',
+        'I': '1', '1': 'I',
+        'L': '1',
+        'Z': '2', '2': 'Z',
+        'S': '5', '5': 'S',
+        'G': '6', '6': 'G',
+        'B': '8', '8': 'B',
     }
 
+    # 체크섬에 큰 영향을 주는 구간 위주로만 후보를 만든다.
+    idx_pool = list(range(0, 10)) + list(range(13, 20)) + list(range(21, 28)) + list(range(43, 44))
+    idx_pool = [i for i in idx_pool if i < len(L2) and L2[i] in swaps]
 
-def _crop_mrz_band(img: Image.Image, band_ratio: float = 0.42) -> Image.Image:
-    """MRZ는 여권 하단에 위치하므로, 후보 영역의 '하단 띠'만 잘라 OCR"""
-    w, h = img.size
-    y0 = int(h * (1.0 - band_ratio))
-    return img.crop((0, y0, w, h))
+    # 너무 많으면 속도 저하 → 앞쪽 몇 개만
+    idx_pool = idx_pool[:8]
 
+    variants = [L2]
+    for i in idx_pool:
+        new_variants = []
+        for v in variants:
+            ch = v[i]
+            if ch not in swaps:
+                continue
+            v2 = v[:i] + swaps[ch] + v[i+1:]
+            new_variants.append(v2)
+        variants.extend(new_variants)
+        # 중복 제거 + 제한
+        variants = list(dict.fromkeys(variants))[:max_variants]
+        if len(variants) >= max_variants:
+            break
 
-def _prep_mrz(img: Image.Image, target_w: int = 1200) -> Image.Image:
-    g = ImageOps.grayscale(img)
-    w, h = g.size
-    if w > target_w:
-        r = target_w / float(w)
-        g = g.resize((int(w * r), int(h * r)), resample=_PILImage.BILINEAR)
-    g = ImageOps.autocontrast(g)
-    g = g.filter(ImageFilter.MedianFilter(size=3))
-    g = g.filter(ImageFilter.SHARPEN)
-    return g
+    return variants
 
-
-def _tess_string(img: Image.Image, lang: str, config: str, timeout_s: int = 2) -> str:
-    if pytesseract is None:
-        return ""
+def _auto_trim_white_border(img, thresh: int = 245, pad: int = 12):
+    """
+    여권/스캔본 주변의 큰 흰 여백 제거 (속도/정확도 모두 개선).
+    - MRZ가 '하단 비율 crop'로 안 잡히는 샘플(큰 여백 스캔)에서 필수.
+    """
     try:
-        return pytesseract.image_to_string(img, lang=lang, config=config, timeout=timeout_s) or ""
-    except TypeError:
-        # 구버전 pytesseract timeout 미지원
-        try:
-            return pytesseract.image_to_string(img, lang=lang, config=config) or ""
-        except Exception:
-            return ""
+        import numpy as np
+        g = ImageOps.grayscale(img)
+        arr = np.array(g)
+        mask = arr < thresh
+        if not mask.any():
+            return img
+        ys, xs = np.where(mask)
+        x0, x1 = int(xs.min()), int(xs.max())
+        y0, y1 = int(ys.min()), int(ys.max())
+        x0 = max(0, x0 - pad)
+        y0 = max(0, y0 - pad)
+        x1 = min(arr.shape[1]-1, x1 + pad)
+        y1 = min(arr.shape[0]-1, y1 + pad)
+        return img.crop((x0, y0, x1+1, y1+1))
     except Exception:
-        return ""
+        return img
 
-
-def _ocr_mrz(img: Image.Image) -> str:
-    cfg = "--oem 1 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"
-    # ocrb 우선
-    for lang in ("ocrb", "eng+ocrb", "eng"):
-        txt = _tess_string(img, lang=lang, config=cfg, timeout_s=2)
-        if txt and len(txt.strip()) >= 10:
-            return txt
-    return ""
-
-
-def _extract_mrz_pair(raw: str):
+def _estimate_mrz_center_rel(img, down_w: int = 900):
     """
-    raw OCR 결과에서 '<'가 충분하고 길이가 긴 라인 2개를 MRZ 후보로 선택.
-    (엄격 TD3 검증은 기존 _is_td3_candidate 재사용)
+    여러 업체/스캔 방식(여백 큰 PDF, 사진 촬영) 혼재 샘플 대응:
+    - 에지 밀도(행별 Canny edge 비율)로 MRZ가 있는 '가로 텍스트 밀집 띠' 중심을 추정한다.
+    - 반환: 중심 y(0~1) or None
     """
-    if not raw:
+    try:
+        import numpy as np
+        import cv2
+
+        w0, h0 = img.size
+        if w0 <= 0 or h0 <= 0:
+            return None
+
+        h_ds = max(200, int(down_w * (h0 / float(w0))))
+        g = ImageOps.grayscale(img.resize((down_w, h_ds), resample=_PILImage.BILINEAR))
+        a = np.array(g)
+        edges = cv2.Canny(a, 50, 150)
+        row_edge = edges.mean(axis=1).astype(float)
+
+        # 약간 평활화
+        k = 31
+        kernel = np.ones(k) / k
+        row_s = np.convolve(row_edge, kernel, mode="same")
+
+        h = len(row_s)
+        # MRZ는 보통 하단부에 있으므로 하단 쪽(35%~98%)에서 peak 탐색
+        lo, hi = int(h * 0.35), int(h * 0.98)
+        if hi <= lo:
+            return None
+        idx = int(np.argmax(row_s[lo:hi])) + lo
+        return idx / float(h)
+    except Exception:
+        return None
+
+def _mrz_preprocess_variants(img_band):
+    """
+    MRZ 인식용 전처리 2종만 유지 (속도 보호).
+    1) clahe+otsu (대부분 스캔본에서 강함)
+    2) raw gray (과전처리로 글자가 날아가는 케이스 대비)
+    """
+    variants = []
+    try:
+        import numpy as np
+        import cv2
+
+        g = np.array(ImageOps.grayscale(img_band))
+        g = cv2.GaussianBlur(g, (3, 3), 0)
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        g2 = clahe.apply(g)
+
+        _, b = cv2.threshold(g2, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # 흑백 반전이 필요한 경우(문서가 어둡게 스캔된 케이스)
+        if b.mean() < 127:
+            b = 255 - b
+
+        variants.append(("clahe_otsu", Image.fromarray(b)))
+    except Exception:
+        pass
+
+    variants.append(("raw", ImageOps.grayscale(img_band)))
+    return variants
+
+def _ocr_mrz_block_eng(im, psm: int):
+    # MRZ는 영문/숫자/<만 있으므로 eng + whitelist 로 제한한다.
+    cfg = (
+        f"--oem 3 --psm {psm} "
+        "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ<0123456789 "
+        "-c load_system_dawg=0 -c load_freq_dawg=0"
+    )
+    return _ocr(im, lang="eng", config=cfg, timeout=3)
+
+def _scan_mrz_candidates(img):
+    """
+    샘플 기반 최적화(속도 우선 + 인식률 유지):
+    - 1) 흰 여백 자동 트리밍(큰 여백 스캔 대응)
+    - 2) 에지 기반으로 MRZ 띠 중심 추정 → '그 띠'만 먼저 OCR (초고속)
+    - 3) 실패 시 하단 비율 crop(사진 촬영/여권페이지 전체샷 대응)
+    - 4) 회전은 0/180 우선, 최후에만 90/270
+    반환: (L1, L2, debug_info)
+    """
+    if img is None:
+        return (None, None, {})
+
+    img2 = _auto_trim_white_border(img)
+
+    # 🔹 속도/정확도 밸런스: 1800px (PDF/저해상 스캔에서 MRZ를 살리면서도 과부하 방지)
+    max_side = 1800
+    w0, h0 = img2.size
+    sc = max_side / float(max(w0, h0))
+    if sc < 1.0:
+        img2 = img2.resize((int(w0 * sc), int(h0 * sc)), resample=_PILImage.LANCZOS)
+
+    debug = {"tries": [], "ocr_calls": 0, "max_ocr_calls": 8}
+
+    def _iter_bands(img_rot, mode: str):
+        """
+        mode:
+          - 'edge_fast' : 에지 중심 band 1~2개만
+          - 'edge_full' : 에지 중심 band 2개
+          - 'bottom'    : 하단 비율 crop 4개
+        """
+        w, h = img_rot.size
+
+        if mode.startswith("edge"):
+            center = _estimate_mrz_center_rel(img_rot)
+            if center is None:
+                return
+            centers = [center]
+            if mode == "edge_full":
+                centers.append(min(0.98, max(0.02, center + 0.06)))
+            for c in centers:
+                top = int(max(0.0, c - 0.16) * h)
+                bot = int(min(1.0, c + 0.16) * h)
+                yield (f"edge@{c:.2f}", img_rot.crop((0, top, w, bot)))
+
+        if mode == "bottom":
+            for crop in (0.28, 0.35):
+                top = int(h * (1.0 - crop))
+                yield (f"bottom@{crop:.2f}", img_rot.crop((0, top, w, h)))
+
+    def _try_ocr_on_band(band, rot_deg: int, band_tag: str, stage: str):
+        bw, bh = band.size
+        if bw < 1400:
+            s = 1400 / float(bw)
+            band = band.resize((int(bw * s), int(bh * s)), resample=_PILImage.LANCZOS)
+
+        # stage 별로 시도 횟수를 제한 (속도 보호)
+        if stage == "FAST":
+            pres = _mrz_preprocess_variants(band)[:1]   # clahe_otsu만
+            psms = (7,)                                  # psm 7만
+        elif stage == "MID":
+            pres = _mrz_preprocess_variants(band)        # clahe_otsu + raw
+            psms = (7, 6)
+        else:
+            pres = _mrz_preprocess_variants(band)        # 동일
+            psms = (7, 6)
+
+        for pre_name, pre_img in pres:
+            for psm in psms:
+                if debug["ocr_calls"] >= debug["max_ocr_calls"]:
+                    return (None, None)
+                txt = _ocr_mrz_block_eng(pre_img, psm=psm) or ""
+                debug["ocr_calls"] += 1
+                L1, L2 = find_mrz_pair_from_text(txt)
+
+                ok = False
+                if L1 and L2:
+                    L2n = _normalize_mrz_line(L2)
+                    for v in _mrz_generate_variants(L2n):
+                        if _mrz_td3_checksum_ok(v):
+                            L2 = v
+                            ok = True
+                            break
+
+                debug["tries"].append({"stage": stage, "rot": rot_deg, "band": band_tag, "pre": pre_name, "psm": psm, "ok": ok})
+                if ok:
+                    return (L1, L2)
         return (None, None)
 
-    lines = []
-    for ln in raw.splitlines():
-        s = (ln or "").strip().replace(" ", "")
-        s = re.sub(r"[^A-Z0-9<]", "", s.upper())
-        if len(s) >= 25 and "<" in s:
-            lines.append(s)
+    # ── Stage 1: 초고속 (0/180, edge band 1개, clahe_otsu + psm7만)
+    for rot in (0, 180):
+        imr = img2.rotate(rot, expand=True) if rot else img2
+        for tag, band in _iter_bands(imr, mode="edge_fast"):
+            L1, L2 = _try_ocr_on_band(band, rot_deg=rot, band_tag=tag, stage="FAST")
+            if L1 and L2:
+                return (L1, L2, debug)
 
-    if len(lines) < 2:
-        return (None, None)
+    # ── Stage 2: 중간(0/180, edge band 2개 + bottom crop, 전처리2종 + psm7/6)
+    for rot in (0, 180):
+        imr = img2.rotate(rot, expand=True) if rot else img2
 
-    # 기존 정규화/검증 사용
-    norms = [_normalize_mrz_line(l) for l in lines]
-    best = None
-    for i in range(len(norms) - 1):
-        L1, L2 = norms[i], norms[i + 1]
-        if _is_td3_candidate(L1, L2):
-            sc = (L1 + L2).count("<")
-            if best is None or sc > best[0]:
-                best = (sc, L1, L2)
+        for tag, band in _iter_bands(imr, mode="edge_full"):
+            L1, L2 = _try_ocr_on_band(band, rot_deg=rot, band_tag=tag, stage="MID")
+            if L1 and L2:
+                return (L1, L2, debug)
 
-    if best:
-        return (best[1], best[2])
+        for tag, band in _iter_bands(imr, mode="bottom"):
+            L1, L2 = _try_ocr_on_band(band, rot_deg=rot, band_tag=tag, stage="MID")
+            if L1 and L2:
+                return (L1, L2, debug)
 
-    # fallback: '<' 많은 상위 2개
-    scored = sorted(((n.count("<") + len(n), n) for n in norms), reverse=True)
-    return (scored[0][1], scored[1][1])
+    # ── Stage 3: 최후(90/270, edge 1개 + bottom 1개, clahe_otsu + psm7/6)
+    for rot in (90, 270):
+        imr = img2.rotate(rot, expand=True)
+
+        for tag, band in _iter_bands(imr, mode="edge_fast"):
+            L1, L2 = _try_ocr_on_band(band, rot_deg=rot, band_tag=tag, stage="SLOW")
+            if L1 and L2:
+                return (L1, L2, debug)
+
+        # bottom은 0.35 한 번만 (속도 보호)
+        w, h = imr.size
+        tag = "bottom@0.35"
+        band = imr.crop((0, int(h * (1.0 - 0.35)), w, h))
+        L1, L2 = _try_ocr_on_band(band, rot_deg=rot, band_tag=tag, stage="SLOW")
+        if L1 and L2:
+            return (L1, L2, debug)
+
+    return (None, None, debug)
 
 
 def parse_passport(img):
     """
-    TD3 여권: 국가/방향/상하좌우 편차를 감안하여 MRZ 2줄을 우선 추출.
-    - 속도 보호: 큰 이미지는 축소 + 시도 예산(회전×상하좌우 후보) 내 조기 종료
-    반환:
-      {'성','명','여권','발급','만기','생년월일'}
+    TD3 여권: MRZ(2줄 44자) 기반으로 필드를 파싱한다.
+    - 다양한 스캔/사진/방향/여백 케이스를 '트리밍 + 에지기반 band'로 우선 해결
+    - 성공 판정은 "체크섬 통과"로만 한다 (속도/정확도 동시 확보)
     """
     if img is None:
         return {}
 
-    # 성능 보호: 너무 큰 이미지는 한 변 최대 1600px 로 축소 (기존과 동일)
-    max_side = 1600
-    w0, h0 = img.size
-    scale = max_side / float(max(w0, h0))
-    if scale < 1.0:
-        img = img.resize((int(w0 * scale), int(h0 * scale)), resample=_PILImage.LANCZOS)
+    # 1) MRZ 2줄 찾기
+    L1, L2, _dbg = _scan_mrz_candidates(img)
+    if not L1 or not L2:
+        return {}
 
-    # 회전 우선순위: 0/180 먼저 (대부분 케이스), 그 다음 90/270
-    rotations = (0, 180, 90, 270)
+    # 2) 파싱
+    out = _parse_mrz_pair(L1, L2)
 
-    # 최대 시도 예산 (속도 유지)
-    tries = 0
-    max_tries = 10
+    # 3) 여권번호는 0~8(체크디지트 제외)만 사용
+    if out.get("여권"):
+        out["여권"] = out["여권"].replace("<", "")[:9]
 
-    for deg in rotations:
-        if tries >= max_tries:
-            break
+    # 3.5) 이름 품질 보정: MRZ 이름(특히 명)이 심하게 깨진 경우에만
+    #      비주얼존(상단부)에서 1회 OCR로 라벨 기반 추출을 시도한다. (속도 보호)
+    def _name_suspicious(s: str) -> bool:
+        s = (s or "").strip().upper()
+        if not s:
+            return True
+        if any(ch.isdigit() for ch in s) or len(s) < 3:
+            return True
+        vowels = sum(ch in "AEIOUY" for ch in s)
+        letters = sum("A" <= ch <= "Z" for ch in s)
+        # 자음만 길게 연속되는 값(예: PRJZBM)은 대개 OCR 깨짐
+        if letters >= 5 and vowels == 0:
+            return True
+        return False
 
-        rot = img.rotate(deg, expand=True)
+    if _name_suspicious(out.get("명", "")) and out.get("성"):
+        try:
+            w2, h2 = img.size
+            viz = img.crop((0, 0, w2, int(h2 * 0.72)))
+            viz_txt = _ocr(viz, lang="eng", config="--oem 3 --psm 6") or ""
+            viz_up = re.sub(r"\s+", " ", viz_txt.upper())
 
-        # 여백 제거(필요 시)
-        rot2 = _crop_to_content_bbox(rot)
+            m_sur = re.search(r"(SURNAME|FAMILY\s*NAME)\s*[:\-]?\s*([A-Z][A-Z \-]{2,})", viz_up)
+            m_giv = re.search(r"(GIVEN\s*NAMES?|GIVEN\s*NAME)\s*[:\-]?\s*([A-Z][A-Z \-]{2,})", viz_up)
+            if m_sur:
+                out["성"] = re.sub(r"\s{2,}", " ", m_sur.group(2)).strip()
+            if m_giv:
+                out["명"] = re.sub(r"\s{2,}", " ", m_giv.group(2)).strip()
+        except Exception:
+            pass
 
-        # 후보 영역 중 '엣지밀도' 높은 것부터 시도
-        regions = _split_regions(rot2)
-        scored = sorted((( _edge_density(rimg), rkey, rimg) for rkey, rimg in regions.items()),
-                        key=lambda x: x[0], reverse=True)
-
-        # 우선순위: 상/하/좌/우/전체 중 상위 2개 + full (최소화)
-        cand = []
-        for sc, k, rimg in scored:
-            if k == "full":
-                continue
-            cand.append((k, rimg))
-            if len(cand) >= 2:
-                break
-        cand.append(("full", regions["full"]))
-
-        for k, rimg in cand:
-            if tries >= max_tries:
-                break
-            tries += 1
-
-            band = _crop_mrz_band(rimg)
-            prep = _prep_mrz(band)
-            raw = _ocr_mrz(prep)
-            if not raw:
-                continue
-
-            L1, L2 = _extract_mrz_pair(raw)
-            if not (L1 and L2):
-                continue
-
-            out = _parse_mrz_pair(L1, L2)
-
-            # 필수값(여권번호/생년/만기) 중 2개 이상 있으면 성공으로 간주
-            have = sum(bool(out.get(k)) for k in ("여권", "생년월일", "만기"))
-            if have >= 2:
-                return {
-                    "성":       out.get("성", ""),
-                    "명":       out.get("명", ""),
-                    "여권":     out.get("여권", ""),
-                    "발급":     out.get("발급", ""),
-                    "만기":     out.get("만기", ""),
-                    "생년월일": out.get("생년월일", ""),
-                }
-
-    return {}
+    return {
+        "성":       out.get("성", ""),
+        "명":       out.get("명", ""),
+        "여권":     out.get("여권", ""),
+        "발급":     out.get("발급", ""),
+        "만기":     out.get("만기", ""),
+        "국가":     out.get("국가", ""),
+        "성별":     out.get("성별", ""),
+        "생년월일": out.get("생년월일", ""),
+    }
 
 
 # 등록증(ARC) 관련 보조 정규식/함수들 (사용하던 버전 그대로)
@@ -978,9 +1395,9 @@ def render():
     # 업로드
     cc0, cc1 = st.columns(2)
     with cc0:
-        passport_file = st.file_uploader("여권 이미지 (필수)", type=["jpg", "jpeg", "png", "webp", "pdf"])
+        passport_file = st.file_uploader("여권 이미지/PDF (필수)", type=["jpg", "jpeg", "png", "webp", "pdf"])
     with cc1:
-        arc_file = st.file_uploader("등록증/스티커 이미지 (선택)", type=["jpg", "jpeg", "png", "webp", "pdf"])
+        arc_file = st.file_uploader("등록증/스티커 이미지 (선택)", type=["jpg", "jpeg", "png", "webp"])
 
     # 업로드된 파일이 바뀌면 → 새 스캔으로 판단하고 prefill 플래그 초기화
     prev_pass = st.session_state.get("_scan_prev_passport_name")
@@ -1013,9 +1430,27 @@ def render():
     parsed_passport, parsed_arc = {}, {}
 
     # 이미지/미리보기 + 파싱
+    # - PDF는 1페이지가 아닌 경우가 있어, 최대 2페이지까지만 빠르게 순회하며 MRZ 성공 페이지를 선택
     if passport_file:
-        img_p = open_image_safe(passport_file)
-        parsed_passport = parse_passport(img_p)
+        name_lower = (getattr(passport_file, "name", "") or "").lower()
+        if name_lower.endswith(".pdf"):
+            pdf_bytes = passport_file.getvalue()
+            pdf_imgs = _pdf_to_pil_images(pdf_bytes, max_pages=2, zoom=2.5)
+
+            img_p = pdf_imgs[0].convert("RGB") if pdf_imgs else None
+            parsed_passport = {}
+
+            # 1~2페이지 중 MRZ 파싱이 되는 페이지를 우선 선택
+            for _im in (pdf_imgs or []):
+                _im = _im.convert("RGB")
+                _pp = parse_passport(_im)
+                if _pp and any(v for v in _pp.values()):
+                    img_p = _im
+                    parsed_passport = _pp
+                    break
+        else:
+            img_p = open_image_safe(passport_file)
+            parsed_passport = parse_passport(img_p)
     else:
         img_p = None
 
@@ -1032,7 +1467,7 @@ def render():
     if show_debug:
         with st.expander("🧪 OCR 원문(베스트 설정)", expanded=False):
             if img_p is not None:
-                bp = ocr_try_all(img_p)
+                bp = ocr_try_all(img_p, langs=('eng',), psms=(6,7), pres=('raw','binarize'))
                 st.write({"lang": bp["lang"], "config": bp["config"], "pre": bp["pre"], "score": bp["score"]})
                 st.code(bp["text"][:2000])
             if img_a is not None:
@@ -1085,6 +1520,9 @@ def render():
         setk("여권",     p.get("여권"))
         setk("여권발급", p.get("발급"))
         setk("여권만기", p.get("만기"))
+        setk("국가",     p.get("국가"))
+        setk("성별",     p.get("성별"))
+        setk("생년월일", p.get("생년월일"))
         setk("등록증",   a.get("등록증"))
         setk("번호",     a.get("번호"))
         setk("발급일",   a.get("발급일"))
@@ -1118,7 +1556,7 @@ def render():
 
     st.markdown("### 🔎 스캔 결과 확인 및 수정")
 
-    with st.form(key="scan_confirm_form_v2"):
+    with st.form("scan_confirm_form"):
         # 1) 첫번째 가로 줄: 여권 (이미지 70% + 정보 30%)
         row1_img_col, row1_info_col = st.columns([7, 3])
 
@@ -1131,14 +1569,23 @@ def render():
 
         with row1_info_col:
             # 🔹 여권 이미지 높이에 맞춰 대략 중앙쯤에서 시작하도록 위쪽 여백 추가
-            st.markdown("<div style='height: 240px'></div>", unsafe_allow_html=True)
-
             st.markdown("#### 여권 정보")
+            st.write("")
+            st.write("")
             성   = st.text_input("성(영문)", key="scan_성")
             명   = st.text_input("명(영문)", key="scan_명")
             여권     = st.text_input("여권번호", key="scan_여권")
             여권발급 = st.text_input("여권 발급일(YYYY-MM-DD)", key="scan_여권발급")
             여권만기 = st.text_input("여권 만기일(YYYY-MM-DD)", key="scan_여권만기")
+
+            국가코드 = st.text_input("국적(3자리 코드)", key="scan_국가")
+            성별 = st.text_input("성별(M/F/남/여)", key="scan_성별")
+            생년월일 = st.text_input("생년월일(YYYY-MM-DD)", key="scan_생년월일")
+
+            # 보기용 국가명
+            cn = _country_name((국가코드 or "").strip())
+            if cn and cn != (국가코드 or "").strip().upper():
+                st.caption(f"국가명: {cn}")
 
 
         # 2) 두번째 가로 줄: 등록증 (이미지 70% + 정보 30%)
@@ -1153,9 +1600,9 @@ def render():
 
         with row2_info_col:
             # 🔹 등록증 이미지 중앙쯤에서 입력이 시작되도록 위쪽 여백 추가
-            st.markdown("<div style='height: 160px'></div>", unsafe_allow_html=True)
-
             st.markdown("#### 등록증 / 연락처 정보")
+            st.write("")
+            st.write("")
             한글   = st.text_input("한글 이름", key="scan_한글")
             등록증 = st.text_input("등록증 앞(YYMMDD)", key="scan_등록증")
             번호   = st.text_input("등록증 뒤 7자리",   key="scan_번호")
@@ -1178,6 +1625,9 @@ def render():
                 "여권": 여권.strip(),
                 "발급": 여권발급.strip(),
                 "만기": 여권만기.strip(),
+                "국가": (국가코드 or "").strip(),
+                "성별": (성별 or "").strip(),
+                "생년월일": (생년월일 or "").strip(),
             }
             arc_data = {
                 "한글":   한글.strip(),
