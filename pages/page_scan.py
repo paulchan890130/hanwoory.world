@@ -9,6 +9,8 @@ from datetime import datetime as _dt, timedelta as _td
 import streamlit as st
 from PIL import Image, ImageOps, ImageFilter, ImageStat, Image as _PILImage
 
+from utils.mrz_pipeline import extract_mrz_fields
+
 try:
     import pytesseract
 except Exception:
@@ -532,7 +534,21 @@ def _extract_name_from_mrz_text(raw: str) -> dict:
     return {"성": _clean(m.group(1)), "명": _clean(m.group(2))}
 
 
-def parse_passport(img):
+def _passport_payload(out: dict) -> dict:
+    """여권 OCR 파싱 결과를 공통 포맷으로 정규화."""
+    return {
+        "성":       out.get("성", ""),
+        "명":       out.get("명", ""),
+        "여권":     out.get("여권", ""),
+        "발급":     out.get("발급", ""),
+        "만기":     out.get("만기", ""),
+        "국가":     out.get("국가", ""),
+        "성별":     out.get("성별", ""),
+        "생년월일": out.get("생년월일", ""),
+    }
+
+
+def _parse_passport_legacy(img):
     """
     TD3 여권: 국가/방향/상하좌우 편차를 감안하여 MRZ 2줄을 우선 추출.
     - 속도 보호: 큰 이미지는 축소 + 시도 예산(회전×상하좌우 후보) 내 조기 종료
@@ -620,33 +636,56 @@ def parse_passport(img):
                     # 필수값(여권번호/생년/만기) 중 2개 이상 있으면 성공으로 간주
                     have = sum(bool(out.get(k)) for k in ("여권", "생년월일", "만기"))
                     if have >= 2:
-                        return {
-                            "성":       out.get("성", ""),
-                            "명":       out.get("명", ""),
-                            "여권":     out.get("여권", ""),
-                            "발급":     out.get("발급", ""),
-                            "만기":     out.get("만기", ""),
-                            "국가":     out.get("국가", ""),
-                            "성별":     out.get("성별", ""),
-                            "생년월일": out.get("생년월일", ""),
-                        }
+                        return _passport_payload(out)
 
                     if have > sum(bool(best.get(k)) for k in ("여권", "생년월일", "만기")):
                         best = out
 
     if best:
-        return {
-            "성":       best.get("성", ""),
-            "명":       best.get("명", ""),
-            "여권":     best.get("여권", ""),
-            "발급":     best.get("발급", ""),
-            "만기":     best.get("만기", ""),
-            "국가":     best.get("국가", ""),
-            "성별":     best.get("성별", ""),
-            "생년월일": best.get("생년월일", ""),
-        }
+        return _passport_payload(best)
 
     return {}
+
+
+def parse_passport(img):
+    """
+    신규 MRZ 파이프라인 우선 적용 후 실패 시 레거시 경로 사용.
+    반환:
+      {'성','명','여권','발급','만기','생년월일','국가','성별'}
+    """
+    if img is None:
+        return {}
+
+    result = extract_mrz_fields(img, time_budget_sec=3.5)
+    st.session_state["passport_mrz_debug"] = result.get("debug", {})
+    if result.get("ok"):
+        fields = result.get("fields", {})
+
+        def _fmt_date(raw: str) -> str:
+            raw = re.sub(r"[^0-9]", "", raw or "")
+            if len(raw) != 6:
+                return ""
+            yy, mm, dd = int(raw[:2]), int(raw[2:4]), int(raw[4:6])
+            yy += 2000 if yy < 80 else 1900
+            try:
+                return _dt(yy, mm, dd).strftime("%Y-%m-%d")
+            except Exception:
+                return ""
+
+        return _passport_payload(
+            {
+                "성": fields.get("surname", ""),
+                "명": fields.get("given_names", ""),
+                "여권": fields.get("passport_no", ""),
+                "발급": "",
+                "만기": _fmt_date(fields.get("expiry_raw", "")),
+                "국가": fields.get("nationality", ""),
+                "성별": fields.get("sex", ""),
+                "생년월일": _fmt_date(fields.get("dob_raw", "")),
+            }
+        )
+
+    return _parse_passport_legacy(img)
 
 
 # 등록증(ARC) 관련 보조 정규식/함수들 (사용하던 버전 그대로)
@@ -1121,6 +1160,8 @@ def render():
 
     # MRZ/ARC 원문 + 파싱 결과 디버그
     if show_debug:
+        with st.expander("🧪 여권 MRZ 디버그"):
+            st.json(st.session_state.get("passport_mrz_debug", {}))
         if img_p is not None:
             with st.expander("🔎 여권 MRZ 원문 샘플"):
                 w, h = img_p.size
