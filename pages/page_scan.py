@@ -34,7 +34,6 @@ from config import (
 from core.customer_service import (
     upsert_customer_from_scan,
 )
-from utils.mrz_pipeline import extract_mrz_fields
 
 # -----------------------------
 # 1) Tesseract 기본 유틸 (간단 버전)
@@ -647,43 +646,7 @@ def parse_passport(img):
             "생년월일": best.get("생년월일", ""),
         }
 
-def parse_passport(img):
-    """
-    MRZ 파이프라인(B 하이브리드) 우선, 실패 시 레거시 경로로 fallback.
-    """
-    if img is None:
-        st.session_state["passport_mrz_debug"] = {
-            "ok": False,
-            "reason": "no-image",
-            "method": "B-hybrid",
-        }
-        return {}
-
-    result = extract_mrz_fields(img, time_budget_sec=3.5)
-    st.session_state["passport_mrz_debug"] = result.get("debug", {})
-
-    if result.get("ok"):
-        fields = result.get("fields", {})
-        expiry = fields.get("expiry_formatted") or ""
-        issued = ""
-        if expiry:
-            try:
-                exp = _dt.strptime(expiry, "%Y-%m-%d").date()
-                issued = (_minus_years(exp, 10) + _td(days=1)).strftime("%Y-%m-%d")
-            except Exception:
-                issued = ""
-        return {
-            "성": fields.get("surname", ""),
-            "명": fields.get("given_names", ""),
-            "여권": fields.get("passport_no", ""),
-            "발급": issued,
-            "만기": expiry,
-            "국가": fields.get("nationality", ""),
-            "성별": "남" if fields.get("sex") == "M" else ("여" if fields.get("sex") == "F" else ""),
-            "생년월일": fields.get("dob_formatted") or "",
-        }
-
-    return _parse_passport_legacy(img)
+    return {}
 
 
 # 등록증(ARC) 관련 보조 정규식/함수들 (사용하던 버전 그대로)
@@ -1159,8 +1122,6 @@ def render():
     # MRZ/ARC 원문 + 파싱 결과 디버그
     if show_debug:
         if img_p is not None:
-            with st.expander("🧭 MRZ 파이프라인 디버그", expanded=False):
-                st.json(st.session_state.get("passport_mrz_debug", {}))
             with st.expander("🔎 여권 MRZ 원문 샘플"):
                 w, h = img_p.size
                 mrz_crop = img_p.crop((0, int(h*0.6), w, h))
