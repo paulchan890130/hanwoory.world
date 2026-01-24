@@ -266,6 +266,24 @@ def _parse_mrz_pair(L1: str, L2: str) -> dict:
     L1 = _normalize_mrz_line(L1) if L1 else ""
     L2 = _normalize_mrz_line(L2) if L2 else ""
 
+    def _fix_mrz_digits(s: str) -> str:
+        """MRZ 숫자 영역에서 흔한 OCR 문자 오인식 보정."""
+        if not s:
+            return s
+        trans = str.maketrans({
+            "O": "0",
+            "Q": "0",
+            "D": "0",
+            "I": "1",
+            "L": "1",
+            "Z": "2",
+            "S": "5",
+            "B": "8",
+            "G": "6",
+            "T": "7",
+        })
+        return s.translate(trans)
+
     # 🔹 이름: "진짜 여권 1줄(P<...)"처럼 생긴 경우에만 파싱
     #   - P<로 시작
     #   - 뒤에 '<<' 구분자가 존재
@@ -284,7 +302,8 @@ def _parse_mrz_pair(L1: str, L2: str) -> dict:
     if nat:
         out["국가"] = nat
 
-    b = re.sub(r"[^0-9]", "", L2[13:19])
+    b = _fix_mrz_digits(re.sub(r"[^0-9A-Z]", "", L2[13:19]))
+    b = re.sub(r"[^0-9]", "", b)
     if len(b) == 6:
         yy, mm, dd = int(b[:2]), int(b[2:4]), int(b[4:6])
         yy += 2000 if yy < 80 else 1900
@@ -296,7 +315,8 @@ def _parse_mrz_pair(L1: str, L2: str) -> dict:
     sx = L2[20:21]
     out["성별"] = "남" if sx == "M" else ("여" if sx == "F" else "")
 
-    e = re.sub(r"[^0-9]", "", L2[21:27])
+    e = _fix_mrz_digits(re.sub(r"[^0-9A-Z]", "", L2[21:27]))
+    e = re.sub(r"[^0-9]", "", e)
     if len(e) == 6:
         yy, mm, dd = int(e[:2]), int(e[2:4]), int(e[4:6])
         yy += 2000 if yy < 80 else 1900
@@ -445,12 +465,14 @@ def _tess_string(img: Image.Image, lang: str, config: str, timeout_s: int = 2) -
 
 
 def _ocr_mrz(img: Image.Image) -> str:
-    cfg = "--oem 1 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"
+    cfg_common = "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"
     # ocrb 우선
-    for lang in ("ocrb", "eng+ocrb", "eng"):
-        txt = _tess_string(img, lang=lang, config=cfg, timeout_s=2)
-        if txt and len(txt.strip()) >= 10:
-            return txt
+    for psm in (7, 6):
+        cfg = f"--oem 1 --psm {psm} {cfg_common}"
+        for lang in ("ocrb", "eng+ocrb", "eng"):
+            txt = _tess_string(img, lang=lang, config=cfg, timeout_s=2)
+            if txt and len(txt.strip()) >= 10:
+                return txt
     return ""
 
 
@@ -490,6 +512,26 @@ def _extract_mrz_pair(raw: str):
     return (scored[0][1], scored[1][1])
 
 
+def _extract_name_from_mrz_text(raw: str) -> dict:
+    """
+    MRZ 블록 텍스트에서 이름 힌트를 추출.
+    (P<국가코드성<<명 패턴을 우선 사용)
+    """
+    if not raw:
+        return {}
+    joined = re.sub(r"\s+", "", raw.upper())
+    m = re.search(r"P<[A-Z0-9]{3}([A-Z<]{2,30})<<([A-Z<]{2,30})", joined)
+    if not m:
+        return {}
+
+    def _clean(s: str) -> str:
+        s = re.sub(r"[^A-Z<]", "", s)
+        s = s.replace("<", " ").strip()
+        return re.sub(r"\s{2,}", " ", s)
+
+    return {"성": _clean(m.group(1)), "명": _clean(m.group(2))}
+
+
 def parse_passport(img):
     """
     TD3 여권: 국가/방향/상하좌우 편차를 감안하여 MRZ 2줄을 우선 추출.
@@ -507,65 +549,102 @@ def parse_passport(img):
     if scale < 1.0:
         img = img.resize((int(w0 * scale), int(h0 * scale)), resample=_PILImage.LANCZOS)
 
+    # 여백이 큰 스캔은 내용 영역을 먼저 추출
+    img = _crop_to_content_bbox(img)
+
     # 회전 우선순위: 0/180 먼저 (대부분 케이스), 그 다음 90/270
     rotations = (0, 180, 90, 270)
 
     # 최대 시도 예산 (속도 유지)
     tries = 0
-    max_tries = 10
+    max_tries = 12
+    best = {}
 
     for deg in rotations:
         if tries >= max_tries:
             break
 
-        rot = img.rotate(deg, expand=True)
-
-        # 여백 제거(필요 시)
-        rot2 = _crop_to_content_bbox(rot)
+        rot = _crop_to_content_bbox(img.rotate(deg, expand=True))
 
         # 후보 영역 중 '엣지밀도' 높은 것부터 시도
-        regions = _split_regions(rot2)
-        scored = sorted((( _edge_density(rimg), rkey, rimg) for rkey, rimg in regions.items()),
-                        key=lambda x: x[0], reverse=True)
+        regions = _split_regions(rot)
+        scored = sorted(
+            ((_edge_density(rimg), rkey, rimg) for rkey, rimg in regions.items()),
+            key=lambda x: x[0],
+            reverse=True,
+        )
 
-        # 우선순위: 상/하/좌/우/전체 중 상위 2개 + full (최소화)
+        # 우선순위: 상/하/좌/우 중 상위 3개 + full
         cand = []
-        for sc, k, rimg in scored:
+        for _, k, rimg in scored:
             if k == "full":
                 continue
             cand.append((k, rimg))
-            if len(cand) >= 2:
+            if len(cand) >= 3:
                 break
         cand.append(("full", regions["full"]))
 
-        for k, rimg in cand:
+        for _, rimg in cand:
             if tries >= max_tries:
                 break
-            tries += 1
 
-            band = _crop_mrz_band(rimg)
-            prep = _prep_mrz(band)
-            raw = _ocr_mrz(prep)
-            if not raw:
-                continue
+            for band_ratio in (0.45, 0.6):
+                if tries >= max_tries:
+                    break
 
-            L1, L2 = _extract_mrz_pair(raw)
-            if not (L1 and L2):
-                continue
+                band = _crop_mrz_band(rimg, band_ratio=band_ratio)
+                for pre in (_prep_mrz, _binarize_soft):
+                    if tries >= max_tries:
+                        break
+                    tries += 1
 
-            out = _parse_mrz_pair(L1, L2)
+                    try:
+                        prep = pre(band)
+                    except Exception:
+                        prep = band
 
-            # 필수값(여권번호/생년/만기) 중 2개 이상 있으면 성공으로 간주
-            have = sum(bool(out.get(k)) for k in ("여권", "생년월일", "만기"))
-            if have >= 2:
-                return {
-                    "성":       out.get("성", ""),
-                    "명":       out.get("명", ""),
-                    "여권":     out.get("여권", ""),
-                    "발급":     out.get("발급", ""),
-                    "만기":     out.get("만기", ""),
-                    "생년월일": out.get("생년월일", ""),
-                }
+                    raw = _ocr_mrz(prep)
+                    if not raw:
+                        continue
+
+                    name_hint = _extract_name_from_mrz_text(raw)
+                    L1, L2 = _extract_mrz_pair(raw)
+                    if not (L1 and L2):
+                        continue
+
+                    out = _parse_mrz_pair(L1, L2)
+                    if name_hint and (not out.get("성") or not out.get("명")):
+                        out["성"] = out.get("성") or name_hint.get("성", "")
+                        out["명"] = out.get("명") or name_hint.get("명", "")
+
+                    # 필수값(여권번호/생년/만기) 중 2개 이상 있으면 성공으로 간주
+                    have = sum(bool(out.get(k)) for k in ("여권", "생년월일", "만기"))
+                    if have >= 2:
+                        return {
+                            "성":       out.get("성", ""),
+                            "명":       out.get("명", ""),
+                            "여권":     out.get("여권", ""),
+                            "발급":     out.get("발급", ""),
+                            "만기":     out.get("만기", ""),
+                            "국가":     out.get("국가", ""),
+                            "성별":     out.get("성별", ""),
+                            "생년월일": out.get("생년월일", ""),
+                        }
+
+                    if have > sum(bool(best.get(k)) for k in ("여권", "생년월일", "만기")):
+                        best = out
+
+    if best:
+        return {
+            "성":       best.get("성", ""),
+            "명":       best.get("명", ""),
+            "여권":     best.get("여권", ""),
+            "발급":     best.get("발급", ""),
+            "만기":     best.get("만기", ""),
+            "국가":     best.get("국가", ""),
+            "성별":     best.get("성별", ""),
+            "생년월일": best.get("생년월일", ""),
+        }
 
     return {}
 
@@ -1082,6 +1161,8 @@ def render():
         setk("한글",     a.get("한글"))
         setk("성",       p.get("성"))
         setk("명",       p.get("명"))
+        setk("성별",     p.get("성별"))
+        setk("국가",     p.get("국가"))
         setk("여권",     p.get("여권"))
         setk("여권발급", p.get("발급"))
         setk("여권만기", p.get("만기"))
@@ -1136,6 +1217,8 @@ def render():
             st.markdown("#### 여권 정보")
             성   = st.text_input("성(영문)", key="scan_성")
             명   = st.text_input("명(영문)", key="scan_명")
+            성별 = st.text_input("성별", key="scan_성별")
+            국가 = st.text_input("국가(국적)", key="scan_국가")
             여권     = st.text_input("여권번호", key="scan_여권")
             여권발급 = st.text_input("여권 발급일(YYYY-MM-DD)", key="scan_여권발급")
             여권만기 = st.text_input("여권 만기일(YYYY-MM-DD)", key="scan_여권만기")
@@ -1175,6 +1258,8 @@ def render():
             passport_data = {
                 "성":   성.strip(),
                 "명":   명.strip(),
+                "성별": 성별.strip(),
+                "국가": 국가.strip(),
                 "여권": 여권.strip(),
                 "발급": 여권발급.strip(),
                 "만기": 여권만기.strip(),
