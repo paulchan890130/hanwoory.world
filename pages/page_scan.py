@@ -680,7 +680,7 @@ def parse_passport(img):
                 "발급": "",
                 "만기": _fmt_date(fields.get("expiry_raw", "")),
                 "국가": fields.get("nationality", ""),
-                "성별": fields.get("sex", ""),
+                "성별": "남" if fields.get("sex") == "M" else ("여" if fields.get("sex") == "F" else ""),
                 "생년월일": _fmt_date(fields.get("dob_raw", "")),
             }
         )
